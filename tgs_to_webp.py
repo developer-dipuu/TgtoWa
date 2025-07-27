@@ -10,11 +10,10 @@ import os
 import tempfile
 import io
 from PIL import Image, ImageDraw
-from lottie.parsers.tgs import parse_tgs
-from lottie.exporters.cairo import cairosvg
-from lottie.exporters.svg import export_svg
 import time
 import webp
+import rlottie_python as rlottie
+
 class TGSToWebPConverter:
     """Converter class for TGS to WebP conversion with automatic timing preservation."""
     
@@ -95,55 +94,41 @@ class TGSToWebPConverter:
              
         return None, None
     
-    def _render_lottie_frame(self, lottie_animation, frame_num: int, total_frames: int) -> Image.Image:
-        """
-        Render a single frame from Lottie animation directly to an in-memory buffer
-        by converting Lottie -> SVG (in a text buffer) -> PNG (in a bytes buffer).
-        """
-        try:
-            # Step 1: Use io.StringIO to create a buffer for TEXT data.
-            svg_text_buffer = io.StringIO()
-            export_svg(lottie_animation, svg_text_buffer, frame=frame_num)
-            svg_text = svg_text_buffer.getvalue()
+    def _render_lottie_frame(self, lottie_animation, frame_num: int) -> Image.Image:
+            """
+            Renders a single frame from a Lottie animation using the correct wrapper method.
+            """
+            try:
+                # This returns a ready-to-use PIL Image object
+                img = lottie_animation.render_pillow_frame(frame_num=frame_num)
 
-            # Step 2: Convert the SVG text (str) into binary data (bytes) using UTF-8 encoding.
-            svg_bytes = svg_text.encode('utf-8')
-
-            # Step 3: Convert the in-memory SVG bytes to in-memory PNG bytes.
-            png_buffer = io.BytesIO()
-            cairosvg.svg2png(bytestring=svg_bytes, write_to=png_buffer)
-            png_buffer.seek(0)
-
-            # Step 4: Load the PNG from the binary buffer into a PIL Image.
-            img = Image.open(png_buffer).convert('RGBA')
-
-            # Resize if needed
-            if self.width != -1 and self.height != -1:
-                img = img.resize((self.width, self.height), Image.LANCZOS)
-                
-            return img
-                
-        except Exception as e:
-            # The fallback will catch any errors in this new process
-            print(f"Warning: Lottie frame rendering failed, using fallback: {e}")
-            return self._create_fallback_frame(lottie_animation, frame_num, total_frames)
+                # Resize if needed
+                if self.width != -1 and self.height != -1:
+                    img = img.resize((self.width, self.height), Image.LANCZOS)
+                    
+                return img
+                    
+            except Exception as e:
+                # The exception block calls the fallback function
+                print(f"Warning: Rlottie frame rendering failed, using fallback: {e}")
+                fallback_width = self.width if self.width != -1 else 512
+                fallback_height = self.height if self.height != -1 else 512
+                total_frames = lottie_animation.lottie_animation_get_totalframe()
+                return self._create_fallback_frame(frame_num, total_frames, width=fallback_width, height=fallback_height)
 
 
     
-    def _create_fallback_frame(self, lottie_animation, frame_num: int, total_frames: int) -> Image.Image:
+    def _create_fallback_frame(self, frame_num: int, total_frames: int, width: int = 512, height: int = 512) -> Image.Image:
         """Create a simple fallback frame when Lottie rendering fails."""
-        # Create a simple animated frame with PIL
-        fallback_width = self.width if self.width != -1 else lottie_animation.width
-        fallback_height = self.height if self.height != -1 else lottie_animation.height
-        img = Image.new('RGBA', (fallback_width, fallback_height), (0, 0, 0, 0))
+        img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         
         # Calculate animation progress
         progress = frame_num / max(total_frames - 1, 1)
         
         # Create a simple animated element
-        center_x = int(fallback_width * (0.2 + 0.6 * progress))
-        center_y = int(fallback_height * 0.5)
+        center_x = int(width * (0.2 + 0.6 * progress))
+        center_y = int(height * 0.5)
         radius = int(30 + 20 * abs(0.5 - progress) * 2)
         
         # Draw a circle
@@ -165,17 +150,20 @@ class TGSToWebPConverter:
 
         # --- Stage 1: Parse and Render ALL Original Frames ---
         try:
-            with open(tgs_path, 'rb') as f:
-                lottie_animation = parse_tgs(f)
+            lottie_animation = rlottie.LottieAnimation.from_tgs(tgs_path)
         except Exception as e:
-            raise ValueError(f"TGS file is invalid or could not be parsed: {e}")
+                print("⚠️ from_tgs() failed; args:", e.args)
+                raise
 
-        original_total_frames = int(lottie_animation.out_point - lottie_animation.in_point)
-        original_fps = lottie_animation.frame_rate
+        # Fetched metadata
+        original_total_frames = lottie_animation.lottie_animation_get_totalframe()
+        original_fps = lottie_animation.lottie_animation_get_framerate()
         original_duration = original_total_frames / original_fps
-        
+
         print("Pre-rendering all original frames... this might take a moment.")
-        all_frames = [self._render_lottie_frame(lottie_animation, i, original_total_frames) for i in range(original_total_frames)]
+        # Calls the rendering function
+        all_frames = [self._render_lottie_frame(lottie_animation, i) for i in range(original_total_frames)]
+
         
         if not all_frames:
             raise ValueError("Could not render any frames from the TGS file.")
@@ -193,6 +181,8 @@ class TGSToWebPConverter:
         def select_frames(source_frames, count):
             if count <= 0 or len(source_frames) <= 0:
              return []
+            if count == 1:
+                return [source_frames[0]]
             if count >= len(source_frames):
                 return source_frames
             indices = [int(i * (len(source_frames) - 1) / (count - 1)) for i in range(count)]
@@ -207,7 +197,7 @@ class TGSToWebPConverter:
             # Create the buffer
             buffer = self._create_webp_buffer(frames_to_test, final_quality, fps)
             
-            # IMPORTANT: Store the buffer if it was created
+            # Store the buffer if it was created
             if buffer:
                 successful_buffer = buffer
                 return buffer.getbuffer().nbytes
@@ -220,7 +210,7 @@ class TGSToWebPConverter:
             # Create the buffer
             buffer = self._create_webp_buffer(final_frames, quality, fps)
             
-            # IMPORTANT: Store the buffer if it was created
+            # Store the buffer if it was created
             if buffer:
                 successful_buffer = buffer
                 return buffer.getbuffer().nbytes
@@ -230,7 +220,6 @@ class TGSToWebPConverter:
         initial_frame_count = min(original_total_frames, MAX_FRAMES_CAP)
         final_frames = select_frames(all_frames, initial_frame_count)
 
-        # --- Run the multi-stage search logic ---
         print(f"Aiming for a file size under {SIZE_CAP_KB}KB.")
 
         # Stage A: Try with max frames at default quality
@@ -240,12 +229,11 @@ class TGSToWebPConverter:
 
         
         if current_size <= SIZE_TARGET_RANGE[1]:
-            # It's a success! Hold on to this buffer for the final save.
+            # If it's a success hold on to this buffer for the final save.
             successful_buffer = buffer
             print(f"☑️ Success! Size is {current_size / 1024:.1f}KB. No further optimization needed.")
         else:
             print(f"-> Too big ({current_size / 1024:.1f}KB). Starting advanced optimization...")
-            # --- Your algorithm begins! ---
             
             # Decide search ranges based on original frame count
             if original_total_frames > MAX_FRAMES_CAP:
@@ -295,7 +283,8 @@ class TGSToWebPConverter:
                             # If all else fails, just take the smallest possible quality
                              final_quality = 1
                         successful_buffer = self._create_webp_buffer(final_frames, final_quality, 1/original_duration)
-                        print(f"->⚠️ Extreme compression: 1 frame, Q={final_quality}, size {current_size / 1024:.1f}KB.")
+                        final_size_bytes = successful_buffer.getbuffer().nbytes if successful_buffer else 0
+                        print(f"->⚠️ Extreme compression: 1 frame, Q={final_quality}, size {final_size_bytes / 1024:.1f}KB.")
 
 
         # --- Stage 3: Final Save ---
@@ -303,7 +292,6 @@ class TGSToWebPConverter:
             if successful_buffer:
                 print(f"\nWriting final WebP to '{webp_path}'...")
                 with open(webp_path, 'wb') as f:
-                    # Simply write the bytes from the buffer we already created!
                     f.write(successful_buffer.getvalue())
                 return True
             else:
