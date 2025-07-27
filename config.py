@@ -3,14 +3,15 @@ Configuration file for the Telegram to WhatsApp Sticker Converter Bot
 """
 
 # Telegram API Credentials
-API_ID =  # Your API ID
-API_HASH = "" # Your API HASH
-BOT_TOKEN = ""  # Your Bot token 
-BOT_USERNAME = "@" # Bot username
+API_ID =  # Your API ID (must)
+API_HASH = "" # Your API HASH (must)
+BOT_TOKEN = "" # Your bot token (must)
+BOT_USERNAME = "@" # Your bot username (will be used in welcome message)
 
 # Required channels for membership verification
-REQUIRED_CHANNELS = [] # ["@your_channels_here", "@your_channels_here"] # Use this format # If empty it won't force user to join any channel or group before using the bot
-
+REQUIRED_CHANNELS = [] # 👉["@your_channels_here", "@your_channels_here"]👈  Use this format Only
+                                   # Just add your channel here start and help message will be appended automaticlly
+                                   # Just replace @your_support_group_here in the HELP_MESSAGE
 # Sticker pack constraints
 MAX_STICKERS_PER_PACK = 30
 
@@ -22,74 +23,74 @@ ICON_DIMENSIONS = (96, 96)
 TEMP_DIR = "temp"
 OUTPUT_DIR = "output"
 
+_channel_list_str = "\n".join([f"• {channel}" for channel in REQUIRED_CHANNELS])
+
 # Messages
-START_MESSAGE = """
-🎉 Welcome to TG to WA Sticker Converter Bot! 🎉
+START_MESSAGE = f"""
+🎉 <b>Welcome to {BOT_USERNAME}</b> 🎉
 
-I can help you convert Telegram sticker packs to WhatsApp compatible .wastickers format!
+I can convert any <b>Telegram sticker pack</b> directly into <b>WhatsApp stickers</b> for you.
 
-📋 What I can do:
-• Convert Telegram sticker packs to .wastickers format
-• Handle both static and animated stickers
-• Split large packs (>30 stickers) into multiple files
-• Optimize file sizes for WhatsApp compatibility
+<b>To get started, you can either:</b>
+• Send me a sticker pack link
+• Or just send a sticker from the pack you want.
 
-🚀 How to use:
-1. Send me a Telegram sticker pack link (`t.me/addstickers/packname`)
-2. Or forward any sticker from the pack you want to convert
-3. Wait for the conversion to complete
-4. Download your .wastickers file(s)
+For a full guide on features and how to import the stickers to WhatsApp, please use the /help command.
 
-📱 To import to WhatsApp:
-Use apps like "Sticker Maker" to import the .wastickers files to WhatsApp!
-
-Type /help for more detailed instructions.
-
-⚠️ Note: You must join @your_channels_here to use this bot.
+⚠️ <b>Note:</b> You must join the following channels to use this bot:
+{_channel_list_str}
 """
 
-HELP_MESSAGE = """
-📖 Help - TG to WA Sticker Converter Bot
+HELP_MESSAGE = f"""
+📖 <b>Help Guide</b>
 
-🔗 How to convert sticker packs:
+🤔 <b>How to Convert a Pack?</b>
+You have two simple options:
+<blockquote>1.  <b>Send a Link</b>: Copy the sticker pack's link and send it to me.</blockquote>
+<blockquote>2.  <b>Send a Sticker</b>: Just send any sticker from the pack you want. I'll handle the rest.</blockquote>
 
-Method 1 - Sticker Pack Link:
-• Go to any Telegram sticker pack
-• Copy the pack link (`t.me/addstickers/packname`)
-• Send the link to me
+---
 
-Method 2 - Forward Sticker:
-• Forward any sticker from the pack you want
-• I'll automatically detect and convert the entire pack
+👉 <b>How to Add Stickers to WhatsApp</b>
 
-📱 How to import to WhatsApp:
-1. Download a "Sticker Maker" app from your app store
-2. Open the app and look for "Import" or "Add stickers" option
-3. Select the .wastickers file(s) I sent you
-4. Follow the app's instructions to add to WhatsApp
+1.  <b>📱 Install the App</b>: 
+<blockquote>You'll need a helper app. We recommend <b>Sticker Maker for WhatsApp</b>.
 
-📋 Important Notes:
-• Large packs (>30 stickers) will be split into multiple files
-• Each sticker is optimized for WhatsApp compatibility
-• Video/animated stickers are converted perfectly
-• You must be a member of @your_channels_here
+<b>🔗Google Play Link</b>: <b><a href="https://play.google.com/store/apps/details?id=com.marsvard.stickermakerforwhatsapp">Click here</a></b>
+<b>🔗App Store Link</b>: <b><a href="https://apps.apple.com/us/app/sticker-maker-studio/id1443326857">Click here</a></b>
+</blockquote>
+2.  <b>📂 Open the File</b>: 
+<blockquote>Once I send you the <code>.wastickers</code> file, tap on it here in Telegram.
+</blockquote>
+3.  <b>⬇️ Import</b>: 
+<blockquote>Choose to open the file with the <b>Sticker Maker</b> app. Inside the app, tap "Add to my library" and then "Add to WhatsApp".
+</blockquote>
+That's it, your stickers are ready!
 
-⏱️ Queue System:
-• If multiple users are converting, you'll be added to a queue
-• Use the "Check Queue" button to see your position
-• Please be patient during busy times
+---
 
-❓ Having issues? Contact @your_group_here for support.
+📋 <b>Important Notes</b>
+
+• Packs with more than 30 stickers will be split into multiple files.
+
+⏱️ <b>Queue System</b>
+
+• During busy times, you'll be placed in a queue. Use the "Check Queue" button to see your position.
+
+💬 <b>Support</b>
+
+If you run into any issues or have questions, please join our support group for assistance.
+<blockquote><b>Support Group</b>: <b>@your_support_group_here</b></blockquote>
+
 """
 
 QUEUE_CHECK_MESSAGE = "📊 Queue Status\n\nYour position: {position}\nTotal in queue: {total}\n\n⏰ Estimated wait: {wait_time}"
 
-CHANNEL_JOIN_MESSAGE = """
+CHANNEL_JOIN_MESSAGE = f"""
 ❌ Access Denied!
 
-To use this bot, you must join these channels first:
-• @your_channels_here
-• @your_channels_here
+To use this bot, you must join these channels/groups first:
+{_channel_list_str}
 
-After joining both channels, try again!
+After joining try again!
 """
