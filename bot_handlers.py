@@ -83,7 +83,7 @@ class BotHandlers:
         buttons = [
             [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]
         ]
-        await event.reply(START_MESSAGE, buttons=buttons)
+        await event.reply(START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
         raise StopPropagation
 
     async def help_command(self, event: events.NewMessage.Event):
@@ -91,7 +91,7 @@ class BotHandlers:
         buttons = [
             [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("🏠 Back to Start", b"start")]
         ]
-        await event.reply(HELP_MESSAGE, buttons=buttons)
+        await event.reply(HELP_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
         raise StopPropagation
 
     async def handle_message(self, event: events.NewMessage.Event):
@@ -242,11 +242,11 @@ class BotHandlers:
             buttons = [
                 [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("🏠 Back to Start", b"start")]
             ]
-            await event.edit(HELP_MESSAGE, buttons=buttons)
+            await event.edit(HELP_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
 
         elif data == "start":
             buttons = [
                 [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]
             ]
-            await event.edit(START_MESSAGE, buttons=buttons)
+            await event.edit(START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
 

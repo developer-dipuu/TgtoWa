@@ -79,10 +79,6 @@ class StickerConverter:
                 return await asyncio.to_thread(convert_tgs_to_webp, input_path, output_path, quality=80)
             elif file_ext in ['.webm', '.mp4', '.gif', '.mov', '.mkv']:
                 return await asyncio.to_thread(convert_video_to_webp, input_path, output_path, quality=80)
-            elif file_ext == '.webp':
-                # If it's already a WebP, just copy it over. No need to re-process!
-                shutil.copy(input_path, output_path)
-                return True
             else: # Static image
                 with Image.open(input_path) as img:
                     if img.mode != 'RGBA':
