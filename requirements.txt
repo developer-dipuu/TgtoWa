@@ -1,5 +1,5 @@
-telethon
-pillow
-lottie
-opencv-python
-cairosvg
+telethon==1.40.0
+pillow==11.3.0
+rlottie-python=1.3.7
+webp==0.4.0
+av==15.0.0
