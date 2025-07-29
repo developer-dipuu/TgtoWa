@@ -1,7 +1,7 @@
 """
 TGS to WebP Converter Module
 
-A simple Python module for converting TGS (Telegram animated stickers) to WebP format while compressing it to a maximum size cap (Default is 500).
+A simple Python module for converting TGS (Telegram animated stickers) to WebP format while compressing it to a maximum size cap (Default is 500KB).
 It will basically allow output files between [400,500]KB if SIZE_CAP_KB is 500KB (Default).
 TGS files are gzip-compressed Lottie JSON animations.
 """
@@ -34,72 +34,87 @@ class TGSToWebPConverter:
         if not frames:
             return None
 
-        # 1. write to a temp file
-        with tempfile.NamedTemporaryFile(suffix=".webp", delete=False) as tmp:
-            webp.save_images(frames, tmp.name, fps=fps, quality=quality)
-            tmp.flush()
-
-            # 2. read that file into BytesIO
-            buf = io.BytesIO(tmp.read())
+        # write to a temp file
+        tmp_file = tempfile.NamedTemporaryFile(suffix=".webp", delete=False)
+        try:
+            webp.save_images(frames, tmp_file.name, fps=fps, quality=quality)
+            tmp_file.seek(0)
+            buf = io.BytesIO(tmp_file.read())
+        finally:
+            tmp_file.close()
+            os.unlink(tmp_file.name)  # delete the file
         return buf
 
 
     
     @staticmethod
-    def _binary_search(target_range: tuple, search_space: tuple, evaluator_func) -> tuple[int, int]:
+    def _binary_search(frames: list, target_range: tuple, search_space: tuple, evaluator_func) -> tuple[int, int]:
         """
         Performs a binary search to find a value in search_space that results
         in an outcome within target_range.
 
         Args:
-            target_range: A (min, max) tuple for the desired outcome (file size).
+            target_range: A (min, max) tuple for the desired outcome (file size ).
             search_space: A (min, max) tuple for the values to search (e.g., frame count or quality).
             evaluator_func: A function that takes a value from search_space and returns an outcome.
 
         Returns:
             A tuple of (best_value, best_size). Returns (None, None) if no suitable value is found.
         """
+        # frame range
         low, high = search_space
         best_value = None
         best_size = float('inf')
 
-        # To handle integer ranges correctly
         low, high = int(low), int(high)
         if low > high:
             return None, None
 
         while low <= high:
             mid = (low + high) // 2
-            if mid == 0: # Avoid getting stuck at 0
+            if mid == 0:
                 mid = 1
-
-            current_size = evaluator_func(mid)
-
+            # call either size_4_this_frames or size_4_this_quality
+            current_size = evaluator_func(frames, mid)
+            # size is under the range
             if target_range[0] <= current_size <= target_range[1]:
-                # Perfect match! We are within our target size bracket.
                 return mid, current_size
+            # size is lower than range minimum, not what we want but can be used if we dont find any under the range
             elif current_size < target_range[0]:
-                # The file is too small, try for better quality/more frames.
-                best_value = mid # This is a valid, but small, option
+                best_value = mid 
                 best_size = current_size
                 low = mid + 1
+            # size is heigher than range maximum
             else:
-                # The file is too big, we must reduce quality/frames.
                 high = mid - 1
-        
-        # If we never hit the target range exactly, return the best value found that was under the max
-        # This is useful if the target range [400, 500] is missed, but we found a solution that is, say, 390KB.
+        # return the best frames/quality and best size if no ones fall in the size range after all iterations
         if best_value is not None and best_size <= target_range[1]:
              return best_value, best_size
-             
+        # if size is heigher than range max for all values
         return None, None
+    
+    @staticmethod
+    def _select_indices(total_frames: int, count: int) -> list[int]:
+        """
+        Selects a specific count of frame indices from a total number of frames.
+        """
+        if count <= 0 or total_frames <= 0:
+            return []
+        if count == 1:
+            return [0]
+        if count >= total_frames:
+            return list(range(total_frames))
+
+        indices = [int(i * (total_frames - 1) / (count - 1)) for i in range(count)]
+        return indices
+    
     
     def _render_lottie_frame(self, lottie_animation, frame_num: int) -> Image.Image:
             """
-            Renders a single frame from a Lottie animation using the correct wrapper method.
+            Renders a single frame from a Lottie animation using the wrapper method.
             """
             try:
-                # This returns a ready-to-use PIL Image object
+                # This returns a PIL Image object
                 img = lottie_animation.render_pillow_frame(frame_num=frame_num)
 
                 # Resize if needed
@@ -148,35 +163,38 @@ class TGSToWebPConverter:
         if not os.path.exists(tgs_path):
             raise FileNotFoundError(f"TGS file not found: {tgs_path}")
 
-        # --- Stage 1: Parse and Render ALL Original Frames ---
         try:
+        # --- Step 1: Parse and Render Original Frames ---
             lottie_animation = rlottie.LottieAnimation.from_tgs(tgs_path)
         except Exception as e:
                 print("⚠️ from_tgs() failed; args:", e.args)
                 raise
 
-        # Fetched metadata
+        # Fetch metadata
         original_total_frames = lottie_animation.lottie_animation_get_totalframe()
         original_fps = lottie_animation.lottie_animation_get_framerate()
         original_duration = original_total_frames / original_fps
 
-        print("Pre-rendering all original frames... this might take a moment.")
-        # Calls the rendering function
-        all_frames = [self._render_lottie_frame(lottie_animation, i) for i in range(original_total_frames)]
+        MAX_FRAMES_CAP = 30 # frame cap
 
+        # render only the frames you need
+        indices_to_extract = self._select_indices(original_total_frames, MAX_FRAMES_CAP)
+        try:
+            final_frames = [self._render_lottie_frame(lottie_animation, i) for i in indices_to_extract]
+        except Exception as e:
+            raise ValueError(f"Failed to extract frames from video: {e}")
         
-        if not all_frames:
+        if not final_frames:
             raise ValueError("Could not render any frames from the TGS file.")
-
-        # --- Stage 2: The Optimization Gauntlet! ---
-        SIZE_CAP_KB = 490 # size cap
+        
+        # some important variables
+        SIZE_CAP_KB = 490 # size cap (490 should be 500 but just a lil prtection for some shit file managers)
         SIZE_TARGET_RANGE = ((SIZE_CAP_KB-100) * 1024, SIZE_CAP_KB * 1024)  # Target [400KB, 500KB]
-        MAX_FRAMES_CAP = 30
-        FRAME_PIVOT = MAX_FRAMES_CAP // 2
-
-        final_frames = None
-        final_quality = self.quality # Start with default quality
+        CAP_FRAMES_SiZE = len(final_frames)
+        FRAME_PIVOT = CAP_FRAMES_SiZE // 2
+        final_quality = self.quality
         successful_buffer = None
+
         # Helper to select a subset of frames evenly
         def select_frames(source_frames, count):
             if count <= 0 or len(source_frames) <= 0:
@@ -188,106 +206,97 @@ class TGSToWebPConverter:
             indices = [int(i * (len(source_frames) - 1) / (count - 1)) for i in range(count)]
             return [source_frames[i] for i in indices]
 
-        # Define evaluators for binary search
-        def eval_frames(num_frames):
+        # helper to get size for specific number of frames from given a list of frames
+        def size_4_this_frames(frames, num_frames):
             nonlocal successful_buffer
-            frames_to_test = select_frames(all_frames, num_frames)
+            frames_to_test = select_frames(frames, num_frames)
             fps = len(frames_to_test) / original_duration
             
-            # Create the buffer
             buffer = self._create_webp_buffer(frames_to_test, final_quality, fps)
             
-            # Store the buffer if it was created
             if buffer:
                 successful_buffer = buffer
                 return buffer.getbuffer().nbytes
             return float('inf')
-
-        def eval_quality(quality):
+        
+        # helper to get size for quality
+        def size_4_this_quality(frames, quality):
             nonlocal successful_buffer
-            fps = len(final_frames) / original_duration
+            fps = len(frames) / original_duration
 
-            # Create the buffer
-            buffer = self._create_webp_buffer(final_frames, quality, fps)
+            buffer = self._create_webp_buffer(frames, quality, fps)
             
-            # Store the buffer if it was created
             if buffer:
                 successful_buffer = buffer
                 return buffer.getbuffer().nbytes
             return float('inf')
-            
-        # Determine initial frame count based on caps
-        initial_frame_count = min(original_total_frames, MAX_FRAMES_CAP)
-        final_frames = select_frames(all_frames, initial_frame_count)
+        
+        # --- Step 1: start searching for best size ---
 
-        print(f"Aiming for a file size under {SIZE_CAP_KB}KB.")
+        print(f"📢 Tgs file found, aiming for a file size under {SIZE_CAP_KB}KB.")
 
         # Stage A: Try with max frames at default quality
         print(f"[*] Stage A: Testing with {len(final_frames)} frames @ Q={final_quality}...")
         buffer = self._create_webp_buffer(final_frames, final_quality, len(final_frames) / original_duration)
         current_size = buffer.getbuffer().nbytes if buffer else float('inf')
 
-        
+        # If it's a success hold on to this buffer for the final save.
         if current_size <= SIZE_TARGET_RANGE[1]:
-            # If it's a success hold on to this buffer for the final save.
             successful_buffer = buffer
             print(f"☑️ Success! Size is {current_size / 1024:.1f}KB. No further optimization needed.")
         else:
-            print(f"-> Too big ({current_size / 1024:.1f}KB). Starting advanced optimization...")
+            print(f"->👎 Too big ({current_size / 1024:.1f}KB). Starting advanced optimization...")
             
-            # Decide search ranges based on original frame count
-            if original_total_frames > MAX_FRAMES_CAP:
-                frame_range_1 = (FRAME_PIVOT, MAX_FRAMES_CAP)
-                frame_range_2 = (1, FRAME_PIVOT)
-                fallback_frame_count = FRAME_PIVOT
-            else:
-                frame_range_1 = (original_total_frames / 2, original_total_frames)
-                frame_range_2 = (1, original_total_frames / 2)
-                fallback_frame_count = int(original_total_frames / 2)
+            # Define search ranges
+            frame_range_1 = (FRAME_PIVOT, CAP_FRAMES_SiZE)
+            frame_range_2 = (1, FRAME_PIVOT)
+            fallback_frame_count = FRAME_PIVOT
 
             quality_range_1 = (int(self.quality / 2), self.quality)
             quality_range_2 = (1, int(self.quality / 2))
+            fallback_quality = int(self.quality/2)
 
-            # Stage B: Binary search on frame count [X, Y] @ Q=80
-            print(f"[*] Stage B: Searching frame count in [{int(frame_range_1[0])}, {int(frame_range_1[1])}] @ Q=80...")
-            best_f, best_s = self._binary_search(SIZE_TARGET_RANGE, frame_range_1, eval_frames)
+             # --- Start the search  ---
+
+            # Stage B: Binary search on frame_range1
+            print(f"[*] Stage B: Searching frame count in [{int(frame_range_1[0])}, {int(frame_range_1[1])}] @ Q={final_quality}...")
+            best_f, best_s = self._binary_search(final_frames, SIZE_TARGET_RANGE, frame_range_1, size_4_this_frames)
 
             if best_f:
                 print(f"-> ☑️ Found solution in Stage B: {best_f} frames, size {best_s / 1024:.1f}KB.")
             else:
-                # Stage C: Binary search on quality [40, 80] @ Z frames
+                # Stage C: Binary search on quality_range_1
                 print(f"[*] Stage C: Too big. Fixing at {fallback_frame_count} frames. Searching quality in [{quality_range_1[0]}, {quality_range_1[1]}]...")
-                final_frames = select_frames(all_frames, fallback_frame_count)
-                best_q, best_s = self._binary_search(SIZE_TARGET_RANGE, quality_range_1, eval_quality)
+                final_frames = select_frames(final_frames, fallback_frame_count)
+                best_q, best_s = self._binary_search(final_frames, SIZE_TARGET_RANGE, quality_range_1, size_4_this_quality)
 
                 if best_q:
                     print(f"-> ☑️ Found solution in Stage C: Q={best_q}, size {best_s / 1024:.1f}KB.")
                 else:
-                    # Stage D: Binary search on frame count [1, Z] @ Q=40
-                    print(f"[*] Stage D: Still too big. Fixing quality at 40. Searching frames in [{int(frame_range_2[0])}, {int(frame_range_2[1])}]...")
-                    final_quality = 40
-                    best_f, best_s = self._binary_search(SIZE_TARGET_RANGE, frame_range_2, eval_frames)
+                    # Stage D: Binary search on frame_range_2
+                    print(f"[*] Stage D: Still too big. Fixing quality at {fallback_quality}. Searching frames in [{int(frame_range_2[0])}, {int(frame_range_2[1])}]...")
+                    final_quality = fallback_quality
+                    best_f, best_s = self._binary_search(final_frames, SIZE_TARGET_RANGE, frame_range_2, size_4_this_frames)
                     
                     if best_f:
                         print(f"-> ☑️ Found solution in Stage D: {best_f} frames, size {best_s / 1024:.1f}KB.")
                     else:
-                        # Stage E: Binary search on quality [1, 40] @ 1 frame
-                        print("[*] Stage E: Last resort! Fixing at 1 frame. Searching quality in [1, 40]...")
-                        final_frames = select_frames(all_frames, 1)
-                        final_quality = 40 # Start at 40
-                        best_q, best_s = self._binary_search(SIZE_TARGET_RANGE, quality_range_2, eval_quality)
+                        # Stage E: Binary search on quality_range_2
+                        print(f"[*] Stage E: Last resort! Fixing at {int(frame_range_2[0])} frame. Searching quality in [{quality_range_2[0]}, {quality_range_2[1]}]...")
+                        final_frames = select_frames(final_frames, 1)
+                        best_q, best_s = self._binary_search(final_frames, SIZE_TARGET_RANGE, quality_range_2, size_4_this_quality)
                         
                         if best_q:
-                            final_quality = best_q
+                            print(f"-> ☑️ ⚠️ Extreme compression: 1 frame, Q={best_q}, size {best_s / 1024:.1f}KB.")
                         else:
-                            # If all else fails, just take the smallest possible quality
-                             final_quality = 1
-                        successful_buffer = self._create_webp_buffer(final_frames, final_quality, 1/original_duration)
-                        final_size_bytes = successful_buffer.getbuffer().nbytes if successful_buffer else 0
-                        print(f"->⚠️ Extreme compression: 1 frame, Q={final_quality}, size {final_size_bytes / 1024:.1f}KB.")
+                            # If it still fails set quality 1
+                            final_quality = 1
+                            successful_buffer = self._create_webp_buffer(final_frames, final_quality, 1/original_duration)
+                            current_size = successful_buffer.getbuffer().nbytes if successful_buffer else float('inf')
+                            print(f"->⚠️ Extreme compression: 1 frame, Q=1, size {current_size / 1024:.1f}KB.")
 
 
-        # --- Stage 3: Final Save ---
+        # --- Step 3: Final Save ---
         try:
             if successful_buffer:
                 print(f"\nWriting final WebP to '{webp_path}'...")
