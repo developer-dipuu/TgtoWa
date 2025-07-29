@@ -185,7 +185,7 @@ class BotHandlers:
                         entity=item.chat_id,
                         message=status_message.id,
                         text=f"🚀 Starting conversion for your sticker pack...\n"
-                            f"🤔 Estimated time: `{estimated_time}`"
+                            f"🤔 Estimated time: {estimated_time}"
                     )
 
                     await self.client.send_message(
