@@ -9,7 +9,7 @@ BOT_TOKEN = "" # Your bot token (must)
 BOT_USERNAME = "@" # Your bot username (will be used in welcome message)
 
 # Required channels for membership verification
-REQUIRED_CHANNELS = [] # 👉["@your_channels_here", "@your_channels_here"]👈  Use this format Only
+REQUIRED_CHANNELS = ["@"]          # 👉["@your_channels_here", "@your_channels_here"]👈  Use this format Only
                                    # Just add your channel here start and help message will be appended automaticlly
                                    # Just replace @your_support_group_here in the HELP_MESSAGE
 # Sticker pack constraints
