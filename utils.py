@@ -102,15 +102,26 @@ def is_valid_sticker_url(url: str) -> bool:
     """Check if URL is a valid Telegram sticker pack URL"""
     return extract_pack_name_from_url(url) is not None
 
-def estimate_wait_time(queue_position: int) -> str:
-    """Estimate wait time based on queue position"""
-    # Assume average 2-3 minutes per conversion
-    minutes = queue_position * 2.5
-    
-    if minutes < 1:
-        return "Less than 1 minute"
-    elif minutes < 60:
-        return f"{int(minutes)} minutes"
+def estimate_wait_time(sticker_documents: list) -> str:
+    """
+    Calculates a detailed estimated wait time based on the type of each sticker.
+    """
+    total_seconds = 0
+
+    # Time for processing each sticker
+    for doc in sticker_documents:
+        if doc.mime_type == 'application/x-tgsticker':  # TGS file
+            total_seconds += 2
+        elif doc.mime_type == 'video/webm':  # WebP
+            total_seconds += 1
+        elif doc.mime_type == 'image/webp':
+            total_seconds += 0.1
+        else: # Other static images
+            total_seconds += 1
+
+    # Format the final string
+    if total_seconds < 60:
+        return f"{round(total_seconds)} seconds"
     else:
-        hours = minutes / 60
-        return f"{hours:.1f} hours"
+        minutes = round(total_seconds / 60)
+        return f"{minutes} minute(s)"

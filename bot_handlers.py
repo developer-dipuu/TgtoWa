@@ -104,9 +104,8 @@ class BotHandlers:
 
         if queue_manager.is_user_in_queue(user.id):
             position = queue_manager.get_queue_position(user.id)
-            wait_time = estimate_wait_time(position - 1)
             await event.reply(
-                f"⏳ You're already in the queue!\n\nPosition: {position}\nEstimated wait: {wait_time}",
+                f"⏳ You're already in the queue!\n\nPosition: {position}",
                 buttons=[[Button.inline("📊 Check Queue", b"check_queue")]]
             )
             return
@@ -141,11 +140,10 @@ class BotHandlers:
             user.id, user_display_name, event.chat_id,
             event.message.id, pack_input
         )
-        wait_time = estimate_wait_time(position - 1)
         
         await event.reply(
             f"✅ Added to conversion queue!\n\n"
-            f"📦 Pack: {pack_display_name}\n📍 Position: {position}\n⏰ Estimated wait: {wait_time}\n\n"
+            f"📦 Pack: {pack_display_name}\n📍 Position: {position}\n\n"
             f"I'll notify you when the conversion starts!",
             buttons=[[Button.inline("📊 Check Queue", b"check_queue")]]
         )
@@ -163,7 +161,11 @@ class BotHandlers:
 
                 success = False 
                 try:
-                    await self.client.send_message(item.chat_id, f"🚀 Starting conversion for your requested sticker pack...")
+                    status_message = await self.client.send_message(
+                        item.chat_id, 
+                        "🚀 Starting conversion for your sticker pack...\n"
+                        "🤔 Estimated time: `Calculating...`"
+                    )
                     
                     sticker_set = await self.converter.get_sticker_set(item.pack_input)
                     if not sticker_set:
@@ -171,13 +173,24 @@ class BotHandlers:
                         await self.client.send_message(item.chat_id, f"❌ Failed to find sticker pack: `{error_pack_name}`. It might be private or invalid.")
                         # success is still false
                         continue
-                    
+
                     pack_title = sticker_set.set.title
                     total_stickers = len(sticker_set.documents)
                     num_packs = (total_stickers + MAX_STICKERS_PER_PACK - 1) // MAX_STICKERS_PER_PACK
+
+                    estimated_time = estimate_wait_time(sticker_set.documents)
+
+                    # Edit the original message to show the real estimate
+                    await self.client.edit_message(
+                        entity=item.chat_id,
+                        message=status_message.id,
+                        text=f"🚀 Starting conversion for your sticker pack...\n"
+                            f"🤔 Estimated time: `{estimated_time}`"
+                    )
+
                     await self.client.send_message(
                         item.chat_id,
-                        f"📊 Pack Details:\n• Name: {pack_title}\n• Total stickers: {total_stickers}\n"
+                        f"📊 Pack Details:\n• Name: `{pack_title}`\n• Total stickers: {total_stickers}\n"
                         f"• This will create {num_packs} .wastickers file(s)."
                     )
                     
@@ -227,8 +240,7 @@ class BotHandlers:
             if position:
                 message = QUEUE_CHECK_MESSAGE.format(
                     position=position,
-                    total=stats["total_waiting"] + (1 if stats["currently_processing"] else 0),
-                    wait_time=estimate_wait_time(position - 1)
+                    total=stats["total_waiting"] + (1 if stats["currently_processing"] else 0)
                 )
             else:
                 message = f"📊 You're not in the queue. Total users waiting: {stats['total_waiting']}."

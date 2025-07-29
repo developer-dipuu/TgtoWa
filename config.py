@@ -9,7 +9,7 @@ BOT_TOKEN = "" # Your bot token (must)
 BOT_USERNAME = "@" # Your bot username (will be used in welcome message)
 
 # Required channels for membership verification
-REQUIRED_CHANNELS = ["@"]          # 👉["@your_channels_here", "@your_channels_here"]👈  Use this format Only
+REQUIRED_CHANNELS = []             # 👉["@your_channels_here", "@your_channels_here"]👈  Use this format Only
                                    # Just add your channel here start and help message will be appended automaticlly
                                    # Just replace @your_support_group_here in the HELP_MESSAGE
 # Sticker pack constraints
@@ -84,7 +84,7 @@ If you run into any issues or have questions, please join our support group for 
 
 """
 
-QUEUE_CHECK_MESSAGE = "📊 Queue Status\n\nYour position: {position}\nTotal in queue: {total}\n\n⏰ Estimated wait: {wait_time}"
+QUEUE_CHECK_MESSAGE = "📊 Queue Status\n\nYour position: {position}\nTotal in queue: {total}"
 
 CHANNEL_JOIN_MESSAGE = f"""
 ❌ Access Denied!

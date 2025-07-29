@@ -76,9 +76,9 @@ class StickerConverter:
             file_ext = os.path.splitext(input_path)[1].lower() if input_path else ''
             
             if file_ext == '.tgs':
-                return await asyncio.to_thread(convert_tgs_to_webp, input_path, output_path, quality=80)
+                return await asyncio.to_thread(convert_tgs_to_webp, input_path, output_path, width= 512, height= 512, quality=80)
             elif file_ext in ['.webm', '.mp4', '.gif', '.mov', '.mkv']:
-                return await asyncio.to_thread(convert_video_to_webp, input_path, output_path, quality=80)
+                return await asyncio.to_thread(convert_video_to_webp, input_path, output_path, width= 512, height= 512, quality=80)
             else: # Static image
                 with Image.open(input_path) as img:
                     if img.mode != 'RGBA':
