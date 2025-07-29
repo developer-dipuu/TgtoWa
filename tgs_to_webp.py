@@ -116,9 +116,8 @@ class TGSToWebPConverter:
             try:
                 # This returns a PIL Image object
                 img = lottie_animation.render_pillow_frame(frame_num=frame_num)
-
                 # Resize if needed
-                if self.width != -1 and self.height != -1:
+                if (self.width != -1 and self.height != -1) and (img.size != (self.width, self.height)):
                     img = img.resize((self.width, self.height), Image.LANCZOS)
                     
                 return img
@@ -313,7 +312,7 @@ class TGSToWebPConverter:
         finally:
             end_time = time.monotonic()
             duration = end_time - start_time
-            print(f"⌛ Total time taken: {duration:.2f} seconds.")
+            print(f"⌛ Total time taken: {duration:.2f} seconds.\n")
 
 
 
