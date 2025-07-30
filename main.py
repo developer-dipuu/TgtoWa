@@ -1,5 +1,5 @@
 """
-Main entry point for the Telegram to WhatsApp Sticker Converter Bot (Telethon Version)
+Main entry point for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
 """
 
 import logging

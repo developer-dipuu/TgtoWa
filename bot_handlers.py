@@ -1,5 +1,5 @@
 """
-Telegram bot handlers for the TG to WA Sticker Converter Bot (Telethon Version)
+Telegram bot handlers for the TG Sticker/Emoji to WA Sticker Converter Bot (Telethon Version)
 """
 
 import os
@@ -9,7 +9,7 @@ from telethon import TelegramClient, events, Button
 from telethon.errors.rpcerrorlist import UserNotParticipantError
 from telethon.events import StopPropagation
 from telethon.tl.functions.channels import GetParticipantRequest
-from telethon.tl.types import DocumentAttributeSticker
+from telethon.tl.types import DocumentAttributeSticker, DocumentAttributeCustomEmoji
 
 from config import *
 from utils import *
@@ -38,7 +38,7 @@ class BotHandlers:
         self.client.add_event_handler(self.handle_callback_query, events.CallbackQuery(func=lambda e: e.is_private))
 
     def _create_channel_join_buttons(self) -> list:
-        """Dynamically creates the inline keyboard for joining required channels using Telethon's Button."""
+        """Dynamically creates the inline keyboard for joining required channels."""
         keyboard = []
         for i in range(0, len(REQUIRED_CHANNELS), 2):
             row = []
@@ -55,7 +55,7 @@ class BotHandlers:
         return keyboard
 
     async def check_user_membership(self, user_id: int) -> bool:
-        """Check if user is a member of required channels using Telethon."""
+        """Check if user is a member of required channels."""
         if not REQUIRED_CHANNELS:
             return True
         try:
@@ -95,7 +95,7 @@ class BotHandlers:
         raise StopPropagation
 
     async def handle_message(self, event: events.NewMessage.Event):
-        """Handle incoming messages (URLs or stickers)."""
+        """Handle incoming messages (sticker/emoji pack URLs, stickers, or custom emojis)."""
         user = await event.get_sender()
         
         if not await self.check_user_membership(user.id):
@@ -112,28 +112,55 @@ class BotHandlers:
 
         pack_input = None
         pack_display_name = "Unknown Pack"
-
+        
         if event.text:
             pack_input = extract_pack_name_from_url(event.text)
             if not pack_input:
                 await event.reply(
-                    "❌ Invalid sticker pack URL!\n\n"
-                    "Please send a valid Telegram sticker pack link (t.me/addstickers/packname) "
-                    "or forward a sticker from the pack you want to convert."
+                    "❌ **Invalid input!**\n\n"
+                    "Please send a valid Telegram sticker or emoji pack link, "
+                    "or forward a sticker/emoji from the pack you want to convert."
                 )
                 return
-            pack_display_name = pack_input
         elif event.sticker:
+            # First, get the sticker set object from the sticker attributes
             for attr in event.sticker.attributes:
                 if isinstance(attr, DocumentAttributeSticker):
                     pack_input = attr.stickerset
-                    pack_display_name = f"the sticker pack you forwarded"
                     break
+            
             if not pack_input:
                 await event.reply(
                     "❌ This sticker doesn't seem to belong to a pack I can access.\n\nPlease forward a sticker from a public sticker pack."
                 )
                 return
+
+        elif event.document and hasattr(event.document, 'attributes'):
+            # This handles custom emojis sent from the emoji panel or forwarded
+            for attr in event.document.attributes:
+                if isinstance(attr, DocumentAttributeCustomEmoji):
+                    pack_input = attr.stickerset
+                    break
+            
+            if not pack_input:
+                # This message is for documents that aren't recognized as emojis
+                 await event.reply(
+                    "❌ **Invalid input!**\n\n"
+                    "Please send a valid Telegram sticker or emoji pack link, "
+                    "or forward a sticker/emoji from the pack you want to convert."
+                )
+        # Fetch the sticker/emoji set to get its actual name
+        try:
+            sticker_set = await self.converter.get_sticker_set(pack_input)
+            if sticker_set and sticker_set.set:
+                pack_display_name = sticker_set.set.title
+            else:
+                # Fallback in case we can't get the name for some reason
+                pack_display_name = pack_input
+                logger.warning(f"Could not fetch set title for user {user.id}.")
+        except Exception as e:
+                logger.error(f"Error fetching set name for user {user.id}: {e}")
+                pack_display_name = "the pack you sent" # Fallback on error
 
         user_display_name = get_user_display_name(user)
         position = await queue_manager.add_to_queue(
@@ -163,14 +190,14 @@ class BotHandlers:
                 try:
                     status_message = await self.client.send_message(
                         item.chat_id, 
-                        "🚀 Starting conversion for your sticker pack...\n"
+                        "🚀 Starting conversion for your pack...\n"
                         "🤔 Estimated time: `Calculating...`"
                     )
                     
                     sticker_set = await self.converter.get_sticker_set(item.pack_input)
                     if not sticker_set:
                         error_pack_name = item.pack_input if isinstance(item.pack_input, str) else "the pack you sent"
-                        await self.client.send_message(item.chat_id, f"❌ Failed to find sticker pack: `{error_pack_name}`. It might be private or invalid.")
+                        await self.client.send_message(item.chat_id, f"❌ Failed to find pack: `{error_pack_name}`. It might be private or invalid.")
                         # success is still false
                         continue
 
@@ -184,16 +211,21 @@ class BotHandlers:
                     await self.client.edit_message(
                         entity=item.chat_id,
                         message=status_message.id,
-                        text=f"🚀 Starting conversion for your sticker pack...\n"
+                        text=f"🚀 Starting conversion for your pack...\n"
                             f"🤔 Estimated time: {estimated_time}"
                     )
-
-                    await self.client.send_message(
-                        item.chat_id,
-                        f"📊 Pack Details:\n• Name: `{pack_title}`\n• Total stickers: {total_stickers}\n"
-                        f"• This will create {num_packs} .wastickers file(s)."
-                    )
-                    
+                    if sticker_set.set.emojis:
+                        await self.client.send_message(
+                            item.chat_id,
+                            f"📊 Pack Details:\n• Name: `{pack_title}`\n• Total emojis: {total_stickers}\n"
+                            f"• This will create {num_packs} .wastickers file(s)."
+                        )
+                    else:
+                        await self.client.send_message(
+                            item.chat_id,
+                            f"📊 Pack Details:\n• Name: `{pack_title}`\n• Total stickers: {total_stickers}\n"
+                            f"• This will create {num_packs} .wastickers file(s)."
+                        )
                     wastickers_files = await self.converter.create_wastickers_pack(sticker_set, item.username)
                     
                     if wastickers_files:
@@ -206,7 +238,7 @@ class BotHandlers:
                         await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like 'Sticker Maker' on your phone. Enjoy!")
                         success = True
                     else:
-                        await self.client.send_message(item.chat_id, f"❌ Failed to convert the sticker pack '{pack_title}'. There might have been an issue with the sticker files themselves.")
+                        await self.client.send_message(item.chat_id, f"❌ Failed to convert the pack '{pack_title}'. There might have been an issue with the sticker files themselves.")
                         # success is still false
 
                 except Exception as e:

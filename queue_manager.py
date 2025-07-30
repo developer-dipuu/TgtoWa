@@ -1,5 +1,5 @@
 """
-Queue management system for the Telegram to WhatsApp Sticker Converter Bot
+Queue management system for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
 """
 
 import asyncio

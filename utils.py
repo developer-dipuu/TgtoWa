@@ -1,5 +1,5 @@
 """
-Utility functions for the Telegram to WhatsApp Sticker Converter Bot
+Utility functions for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
 """
 
 import os
@@ -18,11 +18,14 @@ def ensure_directories():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def extract_pack_name_from_url(url: str) -> Optional[str]:
-    """Extract sticker pack name from Telegram URL"""
+    """Extract sticker/emoji pack name from Telegram URL"""
     patterns = [
         r't\.me/addstickers/(.+)',
         r'telegram\.me/addstickers/(.+)',
-        r'addstickers/(.+)'
+        r'addstickers/(.+)',
+        r't\.me/addemoji/(.+)',
+        r'telegram\.me/addemoji/(.+)',
+        r'addemoji/(.+)'
     ]
     
     for pattern in patterns:
@@ -31,7 +34,7 @@ def extract_pack_name_from_url(url: str) -> Optional[str]:
             return match.group(1)
     
     return None
-
+# we dont use it as images are already samll in size maybe we need it in future lets see
 def optimize_image_size(image_data: bytes, max_size: int, dimensions: Tuple[int, int]) -> bytes:
     """Optimize image to meet size constraints while maintaining quality"""
     img = Image.open(io.BytesIO(image_data))
@@ -40,10 +43,10 @@ def optimize_image_size(image_data: bytes, max_size: int, dimensions: Tuple[int,
     if img.mode != 'RGBA':
         img = img.convert('RGBA')
     
-    # Resize to target dimensions
+    # resize to target dimensions
     img = img.resize(dimensions, Image.Resampling.LANCZOS)
     
-    # Try different quality settings to meet size constraint
+    # Try different quality settings to meet size cap
     for quality in range(95, 10, -5):
         output = io.BytesIO()
         img.save(output, format='WEBP', quality=quality, optimize=True)
@@ -51,7 +54,7 @@ def optimize_image_size(image_data: bytes, max_size: int, dimensions: Tuple[int,
         if output.tell() <= max_size:
             return output.getvalue()
     
-    # If still too large, try with minimal quality
+    # If still too large try with minimal quality
     output = io.BytesIO()
     img.save(output, format='WEBP', quality=10, optimize=True)
     return output.getvalue()
@@ -76,7 +79,7 @@ def sanitize_filename(filename: str) -> str:
     if len(filename) > 50:
         filename = filename[:50]
     
-    return filename or "sticker_pack"
+    return filename or "converted_pack"
 
 def format_file_size(size_bytes: int) -> str:
     """Format file size in human readable format"""
@@ -95,28 +98,30 @@ def get_user_display_name(user) -> str:
         return f"@{user.username}"
     elif user.first_name:
         return user.first_name
+    elif user.id:
+        return user.id
     else:
         return BOT_USERNAME
 
 def is_valid_sticker_url(url: str) -> bool:
-    """Check if URL is a valid Telegram sticker pack URL"""
+    """Check if URL is a valid Telegram sticker or emoji pack URL"""
     return extract_pack_name_from_url(url) is not None
 
 def estimate_wait_time(sticker_documents: list) -> str:
     """
-    Calculates a detailed estimated wait time based on the type of each sticker.
+    Calculates a detailed estimated wait time based on the type of each sticker/emoji.
     """
     total_seconds = 0
 
-    # Time for processing each sticker
+    # Time for processing each sticker/emoji
     for doc in sticker_documents:
         if doc.mime_type == 'application/x-tgsticker':  # TGS file
             total_seconds += 2
-        elif doc.mime_type == 'video/webm':  # WebP
+        elif doc.mime_type == 'video/webm':  # WebM
             total_seconds += 1
-        elif doc.mime_type == 'image/webp':
+        elif doc.mime_type == 'image/webp': # WebP
             total_seconds += 0.1
-        else: # Other static images
+        else: # Others if any we prbbly wont get any
             total_seconds += 1
 
     # Format the final string

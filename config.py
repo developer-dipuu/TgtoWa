@@ -1,5 +1,5 @@
 """
-Configuration file for the Telegram to WhatsApp Sticker Converter Bot
+Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
 """
 
 # Telegram API Credentials
@@ -12,7 +12,7 @@ BOT_USERNAME = "@" # Your bot username (will be used in welcome message)
 REQUIRED_CHANNELS = []             # 👉["@your_channels_here", "@your_channels_here"]👈  Use this format Only
                                    # Just add your channel here start and help message will be appended automaticlly
                                    # Just replace @your_support_group_here in the HELP_MESSAGE
-# Sticker pack constraints
+# Sticker/emoji pack constraints
 MAX_STICKERS_PER_PACK = 30
 
 MAX_ICON_SIZE = 50 * 1024      # 50KB
@@ -26,14 +26,15 @@ OUTPUT_DIR = "output"
 _channel_list_str = "\n".join([f"• {channel}" for channel in REQUIRED_CHANNELS])
 
 # Messages
+
 START_MESSAGE = f"""
 🎉 <b>Welcome to {BOT_USERNAME}</b> 🎉
 
-I can convert any <b>Telegram sticker pack</b> directly into <b>WhatsApp stickers</b> for you.
+I can convert any <b>Telegram sticker or emoji pack</b> directly into <b>WhatsApp stickers</b> for you.
 
 <b>To get started, you can either:</b>
-• Send me a sticker pack link
-• Or just send a sticker from the pack you want.
+• Send me a sticker or emoji pack link
+• Or just send a sticker or emoji from the pack you want.
 
 For a full guide on features and how to import the stickers to WhatsApp, please use the /help command.
 
@@ -46,8 +47,8 @@ HELP_MESSAGE = f"""
 
 🤔 <b>How to Convert a Pack?</b>
 You have two simple options:
-<blockquote>1.  <b>Send a Link</b>: Copy the sticker pack's link and send it to me.</blockquote>
-<blockquote>2.  <b>Send a Sticker</b>: Just send any sticker from the pack you want. I'll handle the rest.</blockquote>
+<blockquote>1.  <b>Send a Link</b>: Copy the sticker or emoji pack's link and send it to me.</blockquote>
+<blockquote>2.  <b>Send a Sticker/Emoji</b>: Just send any sticker or emoji from the pack you want. I'll handle the rest.</blockquote>
 
 ---
 
