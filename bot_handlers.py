@@ -205,7 +205,7 @@ class BotHandlers:
                     total_stickers = len(sticker_set.documents)
                     num_packs = (total_stickers + MAX_STICKERS_PER_PACK - 1) // MAX_STICKERS_PER_PACK
 
-                    estimated_time = estimate_wait_time(sticker_set.documents)
+                    estimated_time = estimate_wait_time(sticker_set.documents, num_packs)
 
                     # Edit the original message to show the real estimate
                     await self.client.edit_message(

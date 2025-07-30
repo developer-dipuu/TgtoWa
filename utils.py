@@ -107,7 +107,7 @@ def is_valid_sticker_url(url: str) -> bool:
     """Check if URL is a valid Telegram sticker or emoji pack URL"""
     return extract_pack_name_from_url(url) is not None
 
-def estimate_wait_time(sticker_documents: list) -> str:
+def estimate_wait_time(sticker_documents: list, num_packs: Optional[int]) -> str:
     """
     Calculates a detailed estimated wait time based on the type of each sticker/emoji.
     """
@@ -124,6 +124,8 @@ def estimate_wait_time(sticker_documents: list) -> str:
         else: # Others if any we prbbly wont get any
             total_seconds += 1
 
+    if num_packs:
+        total_seconds += 10*num_packs
     # Format the final string
     if total_seconds < 60:
         return f"{round(total_seconds)} seconds"
