@@ -29,17 +29,30 @@ class TGSToWebPConverter:
         self.width = width
         self.height = height
         self.quality = quality
-    
     def _create_webp_buffer(self, frames, quality, fps):
         if not frames:
             return None
 
-        # write to a temp file
+        # Create a temp file
         tmp_file = tempfile.NamedTemporaryFile(suffix=".webp", delete=False)
         try:
-            webp.save_images(frames, tmp_file.name, fps=fps, quality=quality)
-            tmp_file.seek(0)
-            buf = io.BytesIO(tmp_file.read())
+            webp.save_images(frames, tmp_file.name, fps=fps, quality=quality) # write farmes to the temp file
+            with Image.open(tmp_file.name) as img:
+                buf = io.BytesIO()  # Create an empty buffer
+
+                # Check if the image is static
+                if not getattr(img, 'is_animated', False) and img.n_frames == 1:
+                    # It's a static image strip the extra metadata. (its causing problem beacsue the ouput is getting detected as animated webp)
+                    # And tgs files are generally animated videos but if it has same frame looping again and again, we make it static
+                    # it will add to our computation but will be easier on end user's cpu 🥲
+                    print("-> ✨ Stripping unnecessary animation metadata from static WebP.")
+                    img.save(buf, format='WEBP', quality=quality)
+                    
+                else:
+                    # If it's an animated webp no need to strip metadata
+                    tmp_file.seek(0)
+                    buf.write(tmp_file.read())
+                buf.seek(0)
         finally:
             tmp_file.close()
             os.unlink(tmp_file.name)  # delete the file
@@ -110,25 +123,26 @@ class TGSToWebPConverter:
     
     
     def _render_lottie_frame(self, lottie_animation, frame_num: int) -> Image.Image:
-            """
-            Renders a single frame from a Lottie animation using the wrapper method.
-            """
-            try:
-                # This returns a PIL Image object
-                img = lottie_animation.render_pillow_frame(frame_num=frame_num)
-                # Resize if needed
-                if (self.width != -1 and self.height != -1) and (img.size != (self.width, self.height)):
-                    img = img.resize((self.width, self.height), Image.LANCZOS)
-                    
-                return img
-                    
-            except Exception as e:
-                # The exception block calls the fallback function
-                print(f"Warning: Rlottie frame rendering failed, using fallback: {e}")
-                fallback_width = self.width if self.width != -1 else 512
-                fallback_height = self.height if self.height != -1 else 512
-                total_frames = lottie_animation.lottie_animation_get_totalframe()
-                return self._create_fallback_frame(frame_num, total_frames, width=fallback_width, height=fallback_height)
+        """
+        Renders a single frame from a Lottie animation using the wrapper method.
+        """
+        try:
+            # This returns a PIL Image object
+            img = lottie_animation.render_pillow_frame(frame_num=frame_num)
+            # Resize if needed
+            if (self.width != -1 and self.height != -1) and (img.size != (self.width, self.height)):
+                img = img.resize((self.width, self.height), Image.LANCZOS)
+                
+            return img
+                
+        except Exception as e:
+            # The exception block calls the fallback function
+            print(f"Warning: Rlottie frame rendering failed, using fallback: {e}")
+            fallback_width = self.width if self.width != -1 else 512
+            fallback_height = self.height if self.height != -1 else 512
+            total_frames = lottie_animation.lottie_animation_get_totalframe()
+            return self._create_fallback_frame(frame_num, total_frames, width=fallback_width, height=fallback_height)
+
 
 
     
@@ -193,6 +207,7 @@ class TGSToWebPConverter:
         FRAME_PIVOT = CAP_FRAMES_SiZE // 2
         final_quality = self.quality
         successful_buffer = None
+        
 
         # Helper to select a subset of frames evenly
         def select_frames(source_frames, count):

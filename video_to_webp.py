@@ -8,7 +8,7 @@ Features smart timing preservation and performance optimization.
 
 import os
 import tempfile
-from PIL import Image, ImageDraw
+from PIL import Image
 import argparse
 import sys
 import io
@@ -36,12 +36,27 @@ class VideoToWebPConverter:
         if not frames:
             return None
 
-        # write to a temp file
+        # create a temp file
         tmp_file = tempfile.NamedTemporaryFile(suffix=".webp", delete=False)
         try:
             webp.save_images(frames, tmp_file.name, fps=fps, quality=quality)
-            tmp_file.seek(0)
-            buf = io.BytesIO(tmp_file.read())
+
+            with Image.open(tmp_file.name) as img:
+                buf = io.BytesIO()  # Create an empty buffer
+
+                # Check if the image is static
+                if not getattr(img, 'is_animated', False) and img.n_frames == 1:
+                    # It's a static webp strip the extra misleading metadata. (its causing problem beacsue the ouput is getting detected as animated webp)
+                    # And video will usuallly be converted to animated webP but if it has a single frame repeating again and again then why not make it static
+                    # it will add to our computation but will be easier on end user's cpu 🥲
+                    print("-> ✨ Stripping unnecessary animation metadata from static WebP.")
+                    img.save(buf, format='WEBP', quality=quality)
+                    
+                else:
+                    # If it's an animated webp no need to strip metadata
+                    tmp_file.seek(0)
+                    buf.write(tmp_file.read())
+                buf.seek(0)
         finally:
             tmp_file.close()
             os.unlink(tmp_file.name)  # delete the file-for-good
@@ -172,26 +187,6 @@ class VideoToWebPConverter:
 
         return frames, original_duration
 
-    
-    def _create_fallback_frame(self, width: int, height: int, frame_num: int, total_frames: int) -> Image.Image:
-        """Create a simple fallback frame when video processing fails."""
-        img = Image.new('RGB', (width, height), (128, 128, 128))
-        draw = ImageDraw.Draw(img)
-        
-        # Calculate animation progress
-        progress = frame_num / max(total_frames - 1, 1)
-        
-        # Create a simple animated element
-        center_x = int(width * (0.2 + 0.6 * progress))
-        center_y = int(height * 0.5)
-        radius = int(min(width, height) * 0.1)
-        
-        # Draw a circle
-        color = (255, 100, 100)  # Red
-        draw.ellipse([center_x - radius, center_y - radius, 
-                     center_x + radius, center_y + radius], fill=color)
-        
-        return img
     
     def convert(self, video_path: str, webp_path: str) -> bool:
         """
