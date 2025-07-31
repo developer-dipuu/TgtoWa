@@ -124,9 +124,12 @@ def estimate_wait_time(sticker_documents: list, num_packs: Optional[int]) -> str
         else: # Others if any we prbbly wont get any
             total_seconds += 1
 
-    if num_packs:
-        total_seconds += 10*num_packs
+    """Uncomment this part if you want to add some more logic to estimated time based on number of packs it will create
+    Like if your machine has delays in downloading packs so you may add 10 sec for each pack t the estimated time"""
+    # if num_packs:
+    #     total_seconds += 10*num_packs
     # Format the final string
+    
     if total_seconds < 60:
         return f"{round(total_seconds)} seconds"
     else:
