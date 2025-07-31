@@ -8,6 +8,7 @@ from telethon import TelegramClient
 
 from config import API_ID, API_HASH, BOT_TOKEN
 from bot_handlers import BotHandlers
+from database import init_db
 
 # Configure logging
 logging.basicConfig(
@@ -21,6 +22,8 @@ async def main():
     """
     Initializes the Telethon client, registers handlers, and runs the bot.
     """
+    # Initilize the database
+    init_db()
     # We use a session name for the bot so it can remember its state.
     # The session file will be created in the same directory.
     client = TelegramClient('bot_session', API_ID, API_HASH)

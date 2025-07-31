@@ -7,6 +7,7 @@ API_ID =  # Your API ID (must)
 API_HASH = "" # Your API HASH (must)
 BOT_TOKEN = "" # Your bot token (must)
 BOT_USERNAME = "@" # Your bot username (will be used in welcome message)
+OWNER_ID =  # 👈 Replace with your Telegram User ID
 
 # Required channels for membership verification
 REQUIRED_CHANNELS = []             # 👉["@your_channels_here", "@your_channels_here"]👈  Use this format Only

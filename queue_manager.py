@@ -17,6 +17,7 @@ class QueueItem:
     chat_id: int
     message_id: int
     pack_input: Any  # Can be a string (short_name) or an InputStickerSet object
+    log_id: int
     timestamp: datetime
     status: str = "waiting"  # waiting, processing, completed, error
 
@@ -28,7 +29,7 @@ class QueueManager:
         self._lock = asyncio.Lock()
     
     async def add_to_queue(self, user_id: int, username: str, chat_id: int, 
-                          message_id: int, pack_input: Any) -> int:
+                          message_id: int, pack_input: Any, log_id: int) -> int:
         """Add user to queue and return position"""
         async with self._lock:
             if user_id in self.user_queues:
@@ -42,6 +43,7 @@ class QueueManager:
                 chat_id=chat_id,
                 message_id=message_id,
                 pack_input=pack_input,
+                log_id=log_id,
                 timestamp=datetime.now()
             )
             

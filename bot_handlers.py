@@ -5,16 +5,18 @@ Telegram bot handlers for the TG Sticker/Emoji to WA Sticker Converter Bot (Tele
 import os
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from telethon import TelegramClient, events, Button
 from telethon.errors.rpcerrorlist import UserNotParticipantError
 from telethon.events import StopPropagation
 from telethon.tl.functions.channels import GetParticipantRequest
-from telethon.tl.types import DocumentAttributeSticker, DocumentAttributeCustomEmoji
+from telethon.tl.types import DocumentAttributeSticker, DocumentAttributeCustomEmoji, Message
 
 from config import *
 from utils import *
 from queue_manager import queue_manager
 from sticker_converter import StickerConverter
+import database as db
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +30,40 @@ class BotHandlers:
         self.converter = StickerConverter(self.client)
         self.processing_lock = asyncio.Lock()
 
+    def check_banned(func):
+        """Decorator to check if a user is banned before executing a command."""
+        async def wrapper(self, event):
+            user_id = event.sender_id
+            if db.is_banned(user_id):
+                logger.warning(f"Banned user {user_id} tried to use the bot.")
+                raise StopPropagation  # Silently ignore the user
+            return await func(self, event)
+        return wrapper
+
     def register_handlers(self):
         """
         Registers all event handlers with the Telethon client.
         """
+        # user commands
         self.client.add_event_handler(self.start_command, events.NewMessage(pattern='/start', func=lambda e: e.is_private))
         self.client.add_event_handler(self.help_command, events.NewMessage(pattern='/help', func=lambda e: e.is_private))
-        self.client.add_event_handler(self.handle_message, events.NewMessage(func=lambda e: e.is_private and (e.text or e.sticker)))
+        self.client.add_event_handler(self.mystats_command, events.NewMessage(pattern='/mystats', func=lambda e: e.is_private))
+        # admin/owner commands
+        # promote/demote admin (owner only)
+        self.client.add_event_handler(self.promote_command, events.NewMessage(pattern=r'/promote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.demote_command, events.NewMessage(pattern=r'/demote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
+        # Premium commands (admin use)
+        self.client.add_event_handler(self.add_premium_command, events.NewMessage(pattern=r'/addpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.remove_premium_command, events.NewMessage(pattern=r'/removepremium(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.extend_premium_command, events.NewMessage(pattern=r'/extendpremium(?:@\w+)?\s+([@\w\d]+)\s+(\d+)', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.deduct_premium_command, events.NewMessage(pattern=r'/deductpremium(?:@\w+)?\s+([@\w\d]+)\s+(\d+)', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.getstats_command, events.NewMessage(pattern=r'/getstats(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
+        # ban/unban (admin use)
+        self.client.add_event_handler(self.ban_command, events.NewMessage(pattern=r'/ban', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.unban_command, events.NewMessage(pattern=r'/unban(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
+
+        # Handle all other private messages
+        self.client.add_event_handler(self.handle_message, events.NewMessage(func=lambda e: e.is_private and not e.text.startswith('/') and (e.text or e.sticker)))
         self.client.add_event_handler(self.handle_callback_query, events.CallbackQuery(func=lambda e: e.is_private))
 
     def _create_channel_join_buttons(self) -> list:
@@ -73,9 +102,14 @@ class BotHandlers:
             logger.error(f"General error in check_user_membership for user {user_id}: {e}")
             return False
 
+    @check_banned
     async def start_command(self, event: events.NewMessage.Event):
         """Handle /start command."""
         user = await event.get_sender()
+        # Log user on /start
+        full_name = f"{user.first_name} {user.last_name or ''}".strip()
+        db.add_or_update_user(user.id, user.username, full_name)
+
         if not await self.check_user_membership(user.id):
             await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons())
             return
@@ -86,6 +120,7 @@ class BotHandlers:
         await event.reply(START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
         raise StopPropagation
 
+    @check_banned
     async def help_command(self, event: events.NewMessage.Event):
         """Handle /help command."""
         buttons = [
@@ -94,6 +129,7 @@ class BotHandlers:
         await event.reply(HELP_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
         raise StopPropagation
 
+    @check_banned
     async def handle_message(self, event: events.NewMessage.Event):
         """Handle incoming messages (sticker/emoji pack URLs, stickers, or custom emojis)."""
         user = await event.get_sender()
@@ -112,6 +148,7 @@ class BotHandlers:
 
         pack_input = None
         pack_display_name = "Unknown Pack"
+        is_emoji_pack = False
         
         if event.text:
             pack_input = extract_pack_name_from_url(event.text)
@@ -122,11 +159,18 @@ class BotHandlers:
                     "or forward a sticker/emoji from the pack you want to convert."
                 )
                 return
+            if 'addemoji' in event.text:
+                is_emoji_pack = True
+
         elif event.sticker:
             # First, get the sticker set object from the sticker attributes
             for attr in event.sticker.attributes:
                 if isinstance(attr, DocumentAttributeSticker):
                     pack_input = attr.stickerset
+                    # Check if the pack is for emojis
+                    sticker_set = await self.converter.get_sticker_set(pack_input)
+                    if sticker_set and sticker_set.set.emojis:
+                        is_emoji_pack = True
                     break
             
             if not pack_input:
@@ -140,6 +184,7 @@ class BotHandlers:
             for attr in event.document.attributes:
                 if isinstance(attr, DocumentAttributeCustomEmoji):
                     pack_input = attr.stickerset
+                    is_emoji_pack = True
                     break
             
             if not pack_input:
@@ -163,9 +208,13 @@ class BotHandlers:
                 pack_display_name = "the pack you sent" # Fallback on error
 
         user_display_name = get_user_display_name(user)
+
+        # Log the request to the database
+        log_id = db.log_conversion_request(user.id, str(pack_input), is_emoji_pack)
+
         position = await queue_manager.add_to_queue(
             user.id, user_display_name, event.chat_id,
-            event.message.id, pack_input
+            event.message.id, pack_input, log_id
         )
         
         await event.reply(
@@ -186,7 +235,9 @@ class BotHandlers:
                 if not item:
                     break
 
+                start_time = datetime.now()
                 success = False 
+                status_for_db = "failed"
                 try:
                     status_message = await self.client.send_message(
                         item.chat_id, 
@@ -234,6 +285,8 @@ class BotHandlers:
                             caption = f"📦 {os.path.basename(file_path)} - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
                             await self.client.send_file(item.chat_id, file_path, caption=caption)
                             os.remove(file_path)
+                        success = True
+                        status_for_db = "completed"
                         
                         await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like 'Sticker Maker' on your phone. Enjoy!")
                         success = True
@@ -249,9 +302,323 @@ class BotHandlers:
                     # success is still false
 
                 finally:
+                    # Update the database log
+                    completion_time = datetime.now()
+                    duration = (completion_time - start_time).total_seconds()
+                    db.update_conversion_log(item.log_id, status_for_db, completion_time, duration)
+
                     await queue_manager.complete_processing(item.user_id, success)                
 
+    # Admin commands starts here
+    async def _get_user_from_event(self, event: events.NewMessage.Event, arg: Optional[str]) -> Optional[Message.sender]:
+        """Helper to get user from command argument or reply."""
+        if event.reply_to_msg_id and not arg:
+            reply_msg = await event.get_reply_message()
+            return await reply_msg.get_sender()
+        elif arg:
+            try:
+                # Check if it's a numeric ID first
+                if arg.isdigit():
+                    return await self.client.get_entity(int(arg))
+                else: # Assume it's a username
+                    return await self.client.get_entity(arg)
+            except (ValueError, TypeError):
+                await event.reply("❌ Invalid user ID or username.")
+                return None
+        return None
 
+    async def promote_command(self, event: events.NewMessage.Event):
+        """Owner command to promote a user to admin."""
+        if not db.is_owner(event.sender_id):
+            return # Silently ignore for non-owners
+
+        target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
+        if not target_user:
+            await event.reply("ℹ️ Usage: `/promote <user_id/@username>` or reply to a user's message.")
+            return
+
+        if db.is_admin(target_user.id):
+            await event.reply(f"️🤷‍♂️ User `{target_user.id}` is already an admin.")
+            return
+            
+        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+        db.add_admin(target_user.id, target_user.username, event.sender_id)
+        await event.reply(f"👑 Successfully promoted **{full_name}** (`{target_user.id}`) to Admin!")
+        logger.info(f"User {target_user.id} promoted to admin by {event.sender_id}")
+
+        raise StopPropagation
+
+    async def demote_command(self, event: events.NewMessage.Event):
+        """Owner command to demote an admin."""
+        if not db.is_owner(event.sender_id):
+            return
+
+        target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
+        if not target_user:
+            await event.reply("ℹ️ Usage: `/demote <user_id/@username>` or reply to a user's message.")
+            return
+
+        if not db.is_admin(target_user.id) or db.is_owner(target_user.id):
+            await event.reply(f"🤷‍♂️ User `{target_user.id}` is not a promotable/demotable admin.")
+            return
+
+        if db.remove_admin(target_user.id, event.sender_id):
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+            await event.reply(f"✅ Successfully demoted **{full_name}** (`{target_user.id}`).")
+            logger.info(f"User {target_user.id} demoted by {event.sender_id}")
+        else:
+            await event.reply("❌ Failed to demote user. Are you sure they are an admin?")
+
+        raise StopPropagation
+
+    async def add_premium_command(self, event: events.NewMessage.Event):
+        """Admin command to add a premium user."""
+        if not db.is_admin(event.sender_id):
+            raise StopPropagation # Silently ignore for non-admins
+
+        user_arg = event.pattern_match.group(1)
+        duration_arg = event.pattern_match.group(2)
+        
+        # If both are None, it means the command was likely just /addpremium
+        if not user_arg and not duration_arg:
+            await event.reply("ℹ️ **Usage:** `/addpremium <user_id/@username> <days>`\nOr, reply to a user's message with `/addpremium <days>`.")
+            raise StopPropagation
+
+        # Logic to handle different argument combinations
+        target_user = None
+        duration_days = None
+
+        if user_arg and user_arg.isdigit() and not duration_arg:
+            # Case: /addpremium <days> (with reply)
+            duration_days = int(user_arg)
+            target_user = await self._get_user_from_event(event, None) # Get from reply
+        elif user_arg and duration_arg:
+            # Case: /addpremium <user> <days>
+            duration_days = int(duration_arg)
+            target_user = await self._get_user_from_event(event, user_arg)
+        else:
+            await event.reply("ℹ️ **Invalid format.**\nUsage: `/addpremium <user_id/@username> <days>`\nOr, reply to a user's message with `/addpremium <days>`.")
+            raise StopPropagation
+
+        if not target_user:
+            await event.reply("❌ **User not found.** You must specify a user by their ID/@username or by replying to their message.")
+            raise StopPropagation
+        
+        if not duration_days or duration_days <= 0:
+            await event.reply("❌ **Invalid duration.** Please provide a positive number of days.")
+            raise StopPropagation
+            
+        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+        db.add_premium(target_user.id, target_user.username, duration_days, event.sender_id)
+        expiry = datetime.now() + timedelta(days=duration_days)
+        
+        await event.reply(
+            f"⭐ Successfully granted premium to **{full_name}** (`{target_user.id}`)!\n"
+            f"Expires in: `{duration_days}` days (on {expiry.strftime('%Y-%m-%d')})."
+        )
+        logger.info(f"User {target_user.id} granted {duration_days} days of premium by {event.sender_id}")
+        raise StopPropagation
+    
+    async def remove_premium_command(self, event: events.NewMessage.Event):
+        """Admin command to remove a premium user."""
+        if not db.is_admin(event.sender_id):
+            raise StopPropagation
+
+        target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
+        if not target_user:
+            await event.reply("ℹ️ **Usage:** `/removepremium <user_id/@username>` or reply to a user.")
+            raise StopPropagation
+        
+        if not db.is_premium(target_user.id):
+            await event.reply("🤷‍♂️ This user does not have an active premium subscription.")
+            raise StopPropagation
+
+        if db.remove_premium(target_user.id, event.sender_id):
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+            await event.reply(f"✅ Premium status for **{full_name}** (`{target_user.id}`) has been revoked.")
+        else:
+            await event.reply("❌ An error occurred. Could not remove premium status.")
+        raise StopPropagation
+
+    async def extend_premium_command(self, event: events.NewMessage.Event):
+        """Admin command to extend a premium user's subscription."""
+        if not db.is_admin(event.sender_id):
+            raise StopPropagation
+        
+        user_arg = event.pattern_match.group(1)
+        days_arg = event.pattern_match.group(2)
+
+        if not user_arg or not days_arg:
+             await event.reply("ℹ️ **Usage:** `/extendpremium <user_id/@username> <days>`.")
+             raise StopPropagation
+        
+        target_user = await self._get_user_from_event(event, user_arg)
+        if not target_user:
+            await event.reply("❌ User not found.")
+            raise StopPropagation
+
+        if not db.is_premium(target_user.id):
+            await event.reply("🤷‍♂️ This user isn't premium. Use `/addpremium` to grant them premium first.")
+            raise StopPropagation
+        
+        days_to_add = int(days_arg)
+        new_expiry = db.manage_premium_duration(target_user.id, days_to_add, event.sender_id, 'extended')
+        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+
+        await event.reply(
+            f"✅ Extended premium for **{full_name}** by `{days_to_add}` days.\n"
+            f"New expiry date: `{new_expiry.strftime('%Y-%m-%d')}`."
+        )
+        raise StopPropagation
+
+    async def deduct_premium_command(self, event: events.NewMessage.Event):
+        """Admin command to deduct days from a premium user's subscription."""
+        if not db.is_admin(event.sender_id):
+            raise StopPropagation
+
+        user_arg = event.pattern_match.group(1)
+        days_arg = event.pattern_match.group(2)
+        
+        if not user_arg or not days_arg:
+             await event.reply("ℹ️ **Usage:** `/deductpremium <user_id/@username> <days>`.")
+             raise StopPropagation
+        
+        target_user = await self._get_user_from_event(event, user_arg)
+        if not target_user:
+            await event.reply("❌ User not found.")
+            raise StopPropagation
+
+        if not db.is_premium(target_user.id):
+            await event.reply("🤷‍♂️ This user does not have an active premium subscription.")
+            raise StopPropagation
+
+        days_to_deduct = -abs(int(days_arg)) # Ensure it's a negative number
+        new_expiry = db.manage_premium_duration(target_user.id, days_to_deduct, event.sender_id, 'deducted')
+        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+        
+        expiry_message = f"New expiry date: `{new_expiry.strftime('%Y-%m-%d')}`."
+        if new_expiry < datetime.now():
+            expiry_message = "Their subscription has now expired."
+
+        await event.reply(
+            f"✅ Deducted `{abs(days_to_deduct)}` days from **{full_name}**'s premium.\n{expiry_message}"
+        )
+        raise StopPropagation
+
+    async def getstats_command(self, event: events.NewMessage.Event):
+        """Admin command to get conversion stats for a specific user."""
+        if not db.is_admin(event.sender_id):
+            raise StopPropagation # Only admins can use this
+
+        target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
+        if not target_user:
+            await event.reply("ℹ️ **Usage:** `/getstats <user_id/@username>` or reply to a user's message.")
+            raise StopPropagation
+        
+        # Get user role for display
+        role = "👤 Regular User"
+        if db.is_owner(target_user.id):
+            role = "👑 Owner"
+        elif db.is_admin(target_user.id):
+            role = "👮‍♂️ Admin"
+        elif db.is_premium(target_user.id):
+            role = "⭐ Premium User"
+        
+        stats = db.get_user_stats(target_user.id)
+        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+        
+        message = (
+            f"📊 **Stats for {full_name}** (`{target_user.id}`)\n\n"
+            f"**Status**: {role}\n\n"
+            f"**Conversions Log**:\n"
+            f"  • Total Requests: `{stats['total']}`\n"
+            f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
+            f"  • ❌ Failed: `{stats['failed']}`"
+        )
+        
+        await event.reply(message)
+        raise StopPropagation
+    
+    @check_banned
+    async def mystats_command(self, event: events.NewMessage.Event):
+        """Displays the user's current status and conversion stats."""
+        user = await event.get_sender()
+        
+        # Determine user role
+        role = "👤 Regular User"
+        if db.is_owner(user.id):
+            role = "👑 Owner"
+        elif db.is_admin(user.id):
+            role = "👮‍♂️ Admin"
+        elif db.is_premium(user.id):
+            role = "⭐ Premium User"
+            
+        # Get conversion stats
+        stats = db.get_user_stats(user.id)
+        
+        message = (
+            f"📊 **Your Stats**\n\n"
+            f"**Status**: {role}\n\n"
+            f"**Conversions Log**:\n"
+            f"  • Total Requests: `{stats['total']}`\n"
+            f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
+            f"  • ❌ Failed: `{stats['failed']}`"
+        )
+        
+        await event.reply(message)
+        raise StopPropagation
+    
+    # ban command
+    async def ban_command(self, event: events.NewMessage.Event):
+        """Admin command to ban a user."""
+        if not db.is_admin(event.sender_id):
+            raise StopPropagation
+
+        # Extract the reason. The reason is everything after the user argument.
+        parts = event.raw_text.split(maxsplit=2)
+        user_arg = parts[1] if len(parts) > 1 else None
+        reason = parts[2] if len(parts) > 2 else "No reason provided."
+
+        target_user = await self._get_user_from_event(event, user_arg)
+        if not target_user:
+            await event.reply("ℹ️ **Usage:** `/ban <user_id/@username> [reason]` or reply to a user.")
+            raise StopPropagation
+
+        if db.is_owner(target_user.id) or db.is_admin(target_user.id):
+            await event.reply("❌ Admins and Owners cannot be banned.")
+            raise StopPropagation
+
+        db.ban_user(target_user.id, event.sender_id, reason)
+        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+        await event.reply(f"🚫 **Banned {full_name}** (`{target_user.id}`). They will no longer be able to use the bot.")
+        logger.info(f"User {target_user.id} banned by {event.sender_id}. Reason: {reason}")
+        raise StopPropagation
+
+    # unban command
+    async def unban_command(self, event: events.NewMessage.Event):
+        """Admin command to unban a user."""
+        if not db.is_admin(event.sender_id):
+            raise StopPropagation
+
+        user_arg = event.pattern_match.group(1)
+        target_user = await self._get_user_from_event(event, user_arg)
+        if not target_user:
+            await event.reply("ℹ️ **Usage:** `/unban <user_id/@username>` or reply to a user.")
+            raise StopPropagation
+
+        if not db.is_banned(target_user.id):
+            await event.reply("🤷‍♂️ This user is not currently banned.")
+            raise StopPropagation
+
+        if db.unban_user(target_user.id):
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+            await event.reply(f"✅ **Unbanned {full_name}** (`{target_user.id}`). They can now use the bot again.")
+            logger.info(f"User {target_user.id} unbanned by {event.sender_id}.")
+        else:
+            await event.reply("❌ An error occurred while trying to unban the user.")
+        raise StopPropagation
+
+    @check_banned
     async def handle_callback_query(self, event: events.CallbackQuery.Event):
         """Handle callback queries from inline keyboards."""
         user = await event.get_sender()
