@@ -92,16 +92,14 @@ def format_file_size(size_bytes: int) -> str:
 
 def get_user_display_name(user) -> str:
     """Get user display name with fallback"""
-    from config import BOT_USERNAME
     
     if user.username:
         return f"@{user.username}"
     elif user.first_name:
         return user.first_name
-    elif user.id:
+    else :
         return user.id
-    else:
-        return BOT_USERNAME
+
 
 def is_valid_sticker_url(url: str) -> bool:
     """Check if URL is a valid Telegram sticker or emoji pack URL"""
