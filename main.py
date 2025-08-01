@@ -28,16 +28,18 @@ async def main():
     # The session file will be created in the same directory.
     client = TelegramClient('bot_session', API_ID, API_HASH)
 
-    # Initialize handlers with the client instance
-    handlers = BotHandlers(client)
-    # Register all event handlers
-    handlers.register_handlers()
 
     logger.info("Starting bot...")
     try:
         # Start the client with the bot token
         await client.start(bot_token=BOT_TOKEN)
-        logger.info("Bot started successfully!")
+        bot_info = await client.get_me()
+        logger.info(f"Bot started successfully as @{bot_info.username}!")
+
+        # Initialize handlers with the client instance and bot_info
+        handlers = BotHandlers(client, bot_info)
+        # Register all event handlers
+        handlers.register_handlers()
 
         # The bot will run until you press Ctrl+C
         await client.run_until_disconnected()
