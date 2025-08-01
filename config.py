@@ -6,16 +6,20 @@ Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter 
 API_ID =  # Your API ID (must)
 API_HASH = "" # Your API HASH (must)
 BOT_TOKEN = "" # Your bot token (must)
-BOT_USERNAME = "@" # Your bot username (will be used in welcome message)
-OWNER_ID =  # 👈 Replace with your Telegram User ID
+
+OWNER_ID =  # 👈 Replace with your Telegram User ID (needed for approving admins and users)
 
 # Required channels for membership verification
 REQUIRED_CHANNELS = []             # 👉["@your_channels_here", "@your_channels_here"]👈  Use this format Only
                                    # Just add your channel here start and help message will be appended automaticlly
                                    # Just replace @your_support_group_here in the HELP_MESSAGE
+
+# Support group foor bot related queries (will be used in help message)
+SUPPORT_GROUP_LINK = "@your_support_group_here"
+
 # Sticker/emoji pack constraints
 MAX_STICKERS_PER_PACK = 30
-
+WEBP_QUALITY = 80  # Default qualty at the start of the compression
 MAX_ICON_SIZE = 50 * 1024      # 50KB
 STICKER_DIMENSIONS = (512, 512)
 ICON_DIMENSIONS = (96, 96)
@@ -24,12 +28,13 @@ ICON_DIMENSIONS = (96, 96)
 TEMP_DIR = "temp"
 OUTPUT_DIR = "output"
 
+# Channel list converted to string 
 _channel_list_str = "\n".join([f"• {channel}" for channel in REQUIRED_CHANNELS])
 
 # Messages
 
-START_MESSAGE = f"""
-🎉 <b>Welcome to {BOT_USERNAME}</b> 🎉
+START_MESSAGE_FORMAT = f"""
+🎉 <b>Welcome to {{bot_username}}</b> 🎉
 
 I can convert any <b>Telegram sticker or emoji pack</b> directly into <b>WhatsApp stickers</b> for you.
 
@@ -82,7 +87,7 @@ That's it, your stickers are ready!
 💬 <b>Support</b>
 
 If you run into any issues or have questions, please join our support group for assistance.
-<blockquote><b>Support Group</b>: <b>@your_support_group_here</b></blockquote>
+<blockquote><b>Support Group</b>: <b>{SUPPORT_GROUP_LINK}</b></blockquote>
 
 """
 
