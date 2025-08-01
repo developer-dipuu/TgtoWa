@@ -21,7 +21,7 @@ import database as db
 logger = logging.getLogger(__name__)
 
 class BotHandlers:
-    def __init__(self, client: TelegramClient):
+    def __init__(self, client: TelegramClient, bot_info):
         """
         Initializes the bot handlers with the Telethon client and other necessary components.
         """
@@ -29,14 +29,19 @@ class BotHandlers:
         self.client = client
         self.converter = StickerConverter(self.client)
         self.processing_lock = asyncio.Lock()
+        self.bot_username = f"@{bot_info.username}"
+        # formatted start message
+        self.START_MESSAGE = START_MESSAGE_FORMAT.format(
+            bot_username=self.bot_username,
+        )
+        
 
     def check_banned(func):
         """Decorator to check if a user is banned before executing a command."""
         async def wrapper(self, event):
-            user_id = event.sender_id
-            if db.is_banned(user_id):
-                logger.warning(f"Banned user {user_id} tried to use the bot.")
-                raise StopPropagation  # Silently ignore the user
+            if db.is_banned(event.sender_id):
+                logger.warning(f"Banned user {event.sender_id} tried to use the bot.")
+                raise StopPropagation # Ignore
             return await func(self, event)
         return wrapper
 
@@ -60,7 +65,8 @@ class BotHandlers:
         self.client.add_event_handler(self.getstats_command, events.NewMessage(pattern=r'/getstats(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
         # ban/unban (admin use)
         self.client.add_event_handler(self.ban_command, events.NewMessage(pattern=r'/ban', func=lambda e: e.is_private))
-        self.client.add_event_handler(self.unban_command, events.NewMessage(pattern=r'/unban(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.sban_command, events.NewMessage(pattern=r'/sban', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.unban_command, events.NewMessage(pattern=r'/unban', func=lambda e: e.is_private))
 
         # Handle all other private messages
         self.client.add_event_handler(self.handle_message, events.NewMessage(func=lambda e: e.is_private and not e.text.startswith('/') and (e.text or e.sticker)))
@@ -117,7 +123,7 @@ class BotHandlers:
         buttons = [
             [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]
         ]
-        await event.reply(START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
+        await event.reply(self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
         raise StopPropagation
 
     @check_banned
@@ -539,12 +545,13 @@ class BotHandlers:
         await event.reply(message)
         raise StopPropagation
     
+
     @check_banned
     async def mystats_command(self, event: events.NewMessage.Event):
         """Displays the user's current status and conversion stats."""
         user = await event.get_sender()
         
-        # Determine user role
+        # user role
         role = "👤 Regular User"
         if db.is_owner(user.id):
             role = "👑 Owner"
@@ -553,7 +560,7 @@ class BotHandlers:
         elif db.is_premium(user.id):
             role = "⭐ Premium User"
             
-        # Get conversion stats
+        # get conversion stats
         stats = db.get_user_stats(user.id)
         
         message = (
@@ -568,13 +575,38 @@ class BotHandlers:
         await event.reply(message)
         raise StopPropagation
     
-    # ban command
-    async def ban_command(self, event: events.NewMessage.Event):
-        """Admin command to ban a user."""
+    # silent ban command
+    async def sban_command(self, event: events.NewMessage.Event):
+        """Admin command to SILENTLY ban a user."""
         if not db.is_admin(event.sender_id):
             raise StopPropagation
 
         # Extract the reason. The reason is everything after the user argument.
+        parts = event.raw_text.split(maxsplit=2)
+        user_arg = parts[1] if len(parts) > 1 else None
+        reason = parts[2] if len(parts) > 2 else "No reason provided."
+
+        target_user = await self._get_user_from_event(event, user_arg)
+        if not target_user:
+            await event.reply("ℹ️ **Usage:** `/sban <user_id/@username> [reason]` or reply to a user.")
+            raise StopPropagation
+
+        if db.is_owner(target_user.id) or db.is_admin(target_user.id):
+            await event.reply("❌ Admins and Owners cannot be banned.")
+            raise StopPropagation
+
+        db.ban_user(target_user.id, event.sender_id, reason, is_silent=True)
+        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+        await event.reply(f"🚫 **Silently Banned {full_name}** (`{target_user.id}`).")
+        logger.info(f"User {target_user.id} silently banned by {event.sender_id}. Reason: {reason}")
+        raise StopPropagation
+    
+    # notified ban command 
+    async def ban_command(self, event: events.NewMessage.Event):
+        """Admin command to ban a user and NOTIFY them."""
+        if not db.is_admin(event.sender_id):
+            raise StopPropagation
+
         parts = event.raw_text.split(maxsplit=2)
         user_arg = parts[1] if len(parts) > 1 else None
         reason = parts[2] if len(parts) > 2 else "No reason provided."
@@ -588,10 +620,22 @@ class BotHandlers:
             await event.reply("❌ Admins and Owners cannot be banned.")
             raise StopPropagation
 
-        db.ban_user(target_user.id, event.sender_id, reason)
+        db.ban_user(target_user.id, event.sender_id, reason, is_silent=False)
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-        await event.reply(f"🚫 **Banned {full_name}** (`{target_user.id}`). They will no longer be able to use the bot.")
         logger.info(f"User {target_user.id} banned by {event.sender_id}. Reason: {reason}")
+        
+        notification_status = ""
+        try:
+            await self.client.send_message(
+                target_user.id,
+                f"You have been banned from using this bot by an administrator.\n\n**Reason:** {reason}"
+            )
+            notification_status = "User has been notified."
+        except Exception as e:
+            logger.warning(f"Could not notify user {target_user.id} about their ban: {e}")
+            notification_status = "Could not notify the user (they may have blocked the bot or haven't started yet)."
+
+        await event.reply(f"🚫 **Banned {full_name}** (`{target_user.id}`).\n{notification_status}")
         raise StopPropagation
 
     # unban command
@@ -600,22 +644,25 @@ class BotHandlers:
         if not db.is_admin(event.sender_id):
             raise StopPropagation
 
-        user_arg = event.pattern_match.group(1)
+        parts = event.raw_text.split(maxsplit=2)
+        user_arg = parts[1] if len(parts) > 1 else None
+        reason = parts[2] if len(parts) > 2 else "No reason provided."
+        
         target_user = await self._get_user_from_event(event, user_arg)
         if not target_user:
-            await event.reply("ℹ️ **Usage:** `/unban <user_id/@username>` or reply to a user.")
+            await event.reply("ℹ️ **Usage:** `/unban <user_id/@username> [reason]` or reply to a user.")
             raise StopPropagation
 
         if not db.is_banned(target_user.id):
             await event.reply("🤷‍♂️ This user is not currently banned.")
             raise StopPropagation
 
-        if db.unban_user(target_user.id):
+        if db.unban_user(target_user.id, event.sender_id, reason):
             full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
             await event.reply(f"✅ **Unbanned {full_name}** (`{target_user.id}`). They can now use the bot again.")
-            logger.info(f"User {target_user.id} unbanned by {event.sender_id}.")
+            logger.info(f"User {target_user.id} unbanned by {event.sender_id}. Reason: {reason}")
         else:
-            await event.reply("❌ An error occurred while trying to unban the user.")
+            await event.reply("❌ An error occurred. User might have already been unbanned.")
         raise StopPropagation
 
     @check_banned
@@ -629,7 +676,7 @@ class BotHandlers:
         if data == "check_membership":
             if await self.check_user_membership(user.id):
                 buttons = [[Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]]
-                await event.edit("✅ Great! You're now a member.\n\n" + START_MESSAGE, buttons=buttons)
+                await event.edit("✅ Great! You're now a member.\n\n" + self.START_MESSAGE, buttons=buttons)
             else:
                 await event.edit("❌ You still need to join the required channels.\n\n" + CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons())
         
@@ -659,5 +706,5 @@ class BotHandlers:
             buttons = [
                 [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]
             ]
-            await event.edit(START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
+            await event.edit(self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
 

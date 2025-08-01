@@ -1,5 +1,3 @@
-# fileName: database.py
-# ✨ NEW FILE
 
 import sqlite3
 import logging
@@ -109,16 +107,29 @@ def init_db():
                 )
             """)
 
-            # Table for banned users
+            # Table for currently banned users
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS banned_users (
                     user_id INTEGER PRIMARY KEY,
                     banned_by_admin_id INTEGER NOT NULL,
                     ban_date TIMESTAMP NOT NULL,
+                    is_silent BOOLEAN NOT NULL,
                     reason TEXT
                 )
             """)
 
+            # Table for logging all ban/unban actions
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ban_history (
+                    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_user_id INTEGER NOT NULL,
+                    admin_id INTEGER NOT NULL,
+                    action TEXT NOT NULL, -- 'banned' or 'unbanned'
+                    is_silent_ban BOOLEAN, -- TRUE for /sban, FALSE for /ban, NULL for unban
+                    reason TEXT,
+                    timestamp TIMESTAMP NOT NULL
+                )
+            """)
 
             conn.commit()
             logger.info("Database initialized successfully.")
@@ -183,16 +194,16 @@ def log_conversion_request(user_id: int, pack_input: str, is_emoji: bool) -> int
         return cursor.lastrowid
 
 def update_conversion_log(log_id: int, status: str, completion_time: datetime, duration: float):
-    """Updates a conversion log entry and the user's aggregate stats."""
+    """Updates a conversion log entry and the user's stats."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        # First, update the detailed log
+        # First update the detailed log
         cursor.execute(
             "UPDATE conversion_log SET status = ?, completion_time = ?, duration_seconds = ? WHERE log_id = ?",
             (status, completion_time, duration, log_id)
         )
         
-        # Update the aggregate stats table
+        # Update the stats table
         # Get the user_id for this conversion
         cursor.execute("SELECT user_id FROM conversion_log WHERE log_id = ?", (log_id,))
         result = cursor.fetchone()
@@ -334,19 +345,35 @@ def is_banned(user_id: int) -> bool:
         cursor.execute("SELECT user_id FROM banned_users WHERE user_id = ?", (user_id,))
         return cursor.fetchone() is not None
 
-def ban_user(user_id: int, admin_id: int, reason: Optional[str]):
-    """Adds a user to the banned_users table."""
+def ban_user(user_id: int, admin_id: int, reason: Optional[str], is_silent: bool):
+    """Adds a user to the banned_users table and logs it to history."""
+    now = datetime.now()
     with get_db_connection() as conn:
+        # Add to currently banned table
         conn.execute(
-            "INSERT OR REPLACE INTO banned_users (user_id, banned_by_admin_id, ban_date, reason) VALUES (?, ?, ?, ?)",
-            (user_id, admin_id, datetime.now(), reason)
+            "INSERT OR REPLACE INTO banned_users (user_id, banned_by_admin_id, ban_date, is_silent, reason) VALUES (?, ?, ?, ?, ?)",
+            (user_id, admin_id, now, is_silent, reason)
+        )
+        # Add to history log
+        conn.execute(
+            "INSERT INTO ban_history (target_user_id, admin_id, action, is_silent_ban, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, admin_id, 'banned', is_silent, reason, now)
         )
         conn.commit()
 
-def unban_user(user_id: int) -> bool:
-    """Removes a user from the banned_users table."""
+def unban_user(user_id: int, admin_id: int, reason: Optional[str]) -> bool:
+    """Removes a user from the banned_users table and logs it to history."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM banned_users WHERE user_id = ?", (user_id,))
-        conn.commit()
-        return cursor.rowcount > 0
+        
+        # Only log if a user was actually removed
+        if cursor.rowcount > 0:
+            conn.execute(
+                "INSERT INTO ban_history (target_user_id, admin_id, action, reason, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (user_id, admin_id, 'unbanned', reason, datetime.now())
+            )
+            conn.commit()
+            return True
+        return False
+
