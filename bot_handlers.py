@@ -60,8 +60,8 @@ class BotHandlers:
         # Premium commands (admin use)
         self.client.add_event_handler(self.add_premium_command, events.NewMessage(pattern=r'/addpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.remove_premium_command, events.NewMessage(pattern=r'/removepremium(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
-        self.client.add_event_handler(self.extend_premium_command, events.NewMessage(pattern=r'/extendpremium(?:@\w+)?\s+([@\w\d]+)\s+(\d+)', func=lambda e: e.is_private))
-        self.client.add_event_handler(self.deduct_premium_command, events.NewMessage(pattern=r'/deductpremium(?:@\w+)?\s+([@\w\d]+)\s+(\d+)', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.extend_premium_command, events.NewMessage(pattern=r'/extendpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.deduct_premium_command, events.NewMessage(pattern=r'/deductpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.getstats_command, events.NewMessage(pattern=r'/getstats(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
         # ban/unban (admin use)
         self.client.add_event_handler(self.ban_command, events.NewMessage(pattern=r'/ban', func=lambda e: e.is_private))
@@ -432,16 +432,28 @@ class BotHandlers:
         if not duration_days or duration_days <= 0:
             await event.reply("❌ **Invalid duration.** Please provide a positive number of days.")
             raise StopPropagation
+        
+        if db.is_premium(target_user.id):
+            await event.reply("🤷‍♂️ This user is already premium. Use `/extendpremium` to extend their duration.")
+            raise StopPropagation
             
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-        db.add_premium(target_user.id, target_user.username, duration_days, event.sender_id)
+        try:
+            db.add_premium(target_user.id, target_user.username, duration_days, event.sender_id)
+        except OverflowError as e:
+            await event.reply("❌ Duration is too long.")
+            raise StopPropagation
+        except Exception as e:
+            await event.reply("❌ An unknown error has occurred; please contact the developer")
+            raise StopPropagation
+        
         expiry = datetime.now() + timedelta(days=duration_days)
         
         await event.reply(
             f"⭐ Successfully granted premium to **{full_name}** (`{target_user.id}`)!\n"
-            f"Expires in: `{duration_days}` days (on {expiry.strftime('%Y-%m-%d')})."
+            f"Expires in: `{duration_days}` days (on `{expiry.strftime('%Y-%m-%d %H:%M')}`)."
         )
-        logger.info(f"User {target_user.id} granted {duration_days} days of premium by {event.sender_id}")
+        logger.info(f"User {target_user.id} granted {duration_days} days of premium by admin: {event.sender_id}")
         raise StopPropagation
     
     async def remove_premium_command(self, event: events.NewMessage.Event):
@@ -461,6 +473,7 @@ class BotHandlers:
         if db.remove_premium(target_user.id, event.sender_id):
             full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
             await event.reply(f"✅ Premium status for **{full_name}** (`{target_user.id}`) has been revoked.")
+            logger.info(f"Premium of user {target_user.id} has been revoked by admin: {event.sender_id}")
         else:
             await event.reply("❌ An error occurred. Could not remove premium status.")
         raise StopPropagation
@@ -487,13 +500,22 @@ class BotHandlers:
             raise StopPropagation
         
         days_to_add = int(days_arg)
-        new_expiry = db.manage_premium_duration(target_user.id, days_to_add, event.sender_id, 'extended')
+        try:
+            new_expiry = db.manage_premium_duration(target_user.id, days_to_add, event.sender_id, 'extended')
+        except OverflowError as e:
+            await event.reply("❌ Duration is too long.")
+            raise StopPropagation
+        except Exception as e:
+            await event.reply("❌ An unknown error has occurred; please contact the developer")
+            raise StopPropagation
+
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
 
         await event.reply(
             f"✅ Extended premium for **{full_name}** by `{days_to_add}` days.\n"
-            f"New expiry date: `{new_expiry.strftime('%Y-%m-%d')}`."
+            f"New expiry date: `{new_expiry.strftime('%Y-%m-%d %H:%M')}`."
         )
+        logger.info(f"Premium of user {target_user.id} has been extended by {days_to_add} days by admin: {event.sender_id}")
         raise StopPropagation
 
     async def deduct_premium_command(self, event: events.NewMessage.Event):
@@ -516,18 +538,34 @@ class BotHandlers:
         if not db.is_premium(target_user.id):
             await event.reply("🤷‍♂️ This user does not have an active premium subscription.")
             raise StopPropagation
+        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+
+        current_days_left= db.get_premium_duration_left(target_user.id).days
+        if int(days_arg) > current_days_left:
+            if db.remove_premium(target_user.id, event.sender_id):
+                await event.reply(f"✅ Since **{full_name}** had only `{current_days_left}` days of premium left, they have been **removed** from premium.")
+                logger.info(f"Premium of user {target_user.id} has been revoked by admin: {event.sender_id}")
+            else:
+                await event.reply("❌ An error occurred. Could not remove premium status.")
+            raise StopPropagation
 
         days_to_deduct = -abs(int(days_arg)) # Ensure it's a negative number
-        new_expiry = db.manage_premium_duration(target_user.id, days_to_deduct, event.sender_id, 'deducted')
-        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+        try:
+            new_expiry = db.manage_premium_duration(target_user.id, days_to_deduct, event.sender_id, 'deducted')
+        except OverflowError as e:
+            await event.reply("❌ Duration is too long.")
+            raise StopPropagation
+        except Exception as e:
+            await event.reply("❌ An error occurred. Could not deduct premium.")
+            raise StopPropagation
+
         
-        expiry_message = f"New expiry date: `{new_expiry.strftime('%Y-%m-%d')}`."
-        if new_expiry < datetime.now():
-            expiry_message = "Their subscription has now expired."
+        expiry_message = f"New expiry date: `{new_expiry.strftime('%Y-%m-%d %H:%M')}`."
 
         await event.reply(
             f"✅ Deducted `{abs(days_to_deduct)}` days from **{full_name}**'s premium.\n{expiry_message}"
         )
+        logger.info(f"Premium of user {target_user.id} has been deducted by {abs(days_to_deduct)} days by admin: {event.sender_id}")
         raise StopPropagation
 
     async def getstats_command(self, event: events.NewMessage.Event):
@@ -548,6 +586,12 @@ class BotHandlers:
             role = "👮‍♂️ Admin"
         elif db.is_premium(target_user.id):
             role = "⭐ Premium User"
+            duration_left = db.get_premium_duration_left(target_user.id)
+            if duration_left:
+                days = duration_left.days
+                hours = duration_left.seconds // 3600
+                minutes = (duration_left.seconds % 3600) // 60
+                role += f"\n⏳ **Expires in**: {days}d {hours}h {minutes}m"
         
         stats = db.get_user_stats(target_user.id)
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
@@ -560,7 +604,7 @@ class BotHandlers:
             f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
             f"  • ❌ Failed: `{stats['failed']}`"
         )
-        
+        logger.info(f"Stats of user {target_user.id} has been fetched by admin: {event.sender_id}")
         await event.reply(message)
         raise StopPropagation
     
@@ -578,6 +622,12 @@ class BotHandlers:
             role = "👮‍♂️ Admin"
         elif db.is_premium(user.id):
             role = "⭐ Premium User"
+            duration_left = db.get_premium_duration_left(user.id)
+            if duration_left:
+                days = duration_left.days
+                hours = duration_left.seconds // 3600
+                minutes = (duration_left.seconds % 3600) // 60
+                role += f"\n⏳ **Expires in**: {days}d {hours}h {minutes}m"
             
         # get conversion stats
         stats = db.get_user_stats(user.id)
@@ -592,6 +642,7 @@ class BotHandlers:
         )
         
         await event.reply(message)
+        logger.info(f"User {user.id} has fetched their stats.")
         raise StopPropagation
     
     # silent ban command
@@ -617,7 +668,7 @@ class BotHandlers:
         db.ban_user(target_user.id, event.sender_id, reason, is_silent=True)
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
         await event.reply(f"🚫 **Silently Banned {full_name}** (`{target_user.id}`).")
-        logger.info(f"User {target_user.id} silently banned by {event.sender_id}. Reason: {reason}")
+        logger.info(f"User {target_user.id} silently banned by admin: {event.sender_id}. Reason: {reason}")
         raise StopPropagation
     
     # notified ban command 
@@ -638,10 +689,14 @@ class BotHandlers:
         if db.is_owner(target_user.id) or db.is_admin(target_user.id):
             await event.reply("❌ Admins and Owners cannot be banned.")
             raise StopPropagation
+        
+        if db.is_banned(target_user.id):
+            await event.reply("🤷‍♂️ This user is already banned.")
+            raise StopPropagation
 
         db.ban_user(target_user.id, event.sender_id, reason, is_silent=False)
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-        logger.info(f"User {target_user.id} banned by {event.sender_id}. Reason: {reason}")
+        logger.info(f"User {target_user.id} banned by admin: {event.sender_id}. Reason: {reason}")
         
         notification_status = ""
         try:
@@ -679,7 +734,7 @@ class BotHandlers:
         if db.unban_user(target_user.id, event.sender_id, reason):
             full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
             await event.reply(f"✅ **Unbanned {full_name}** (`{target_user.id}`). They can now use the bot again.")
-            logger.info(f"User {target_user.id} unbanned by {event.sender_id}. Reason: {reason}")
+            logger.info(f"User {target_user.id} unbanned by admin: {event.sender_id}. Reason: {reason}")
         else:
             await event.reply("❌ An error occurred. User might have already been unbanned.")
         raise StopPropagation

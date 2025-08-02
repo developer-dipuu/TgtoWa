@@ -309,6 +309,23 @@ def remove_premium(user_id: int, admin_id: int) -> bool:
             conn.commit()
             return True
         return False
+    
+def get_premium_duration_left(user_id: int) -> Optional[timedelta]:
+    """
+    Calculates the remaining duration for a premium user's subscription.
+    Returns a timedelta object if the subscription is active, otherwise None.
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT expiry_date FROM premium_users WHERE user_id = ? AND expiry_date > ?",
+            (user_id, datetime.now())
+        )
+        result = cursor.fetchone()
+        if result:
+            expiry_date = result['expiry_date']
+            return expiry_date - datetime.now()
+    return None
 
 def manage_premium_duration(user_id: int, days: int, admin_id: int, action: str) -> Optional[datetime]:
     """Extends or deducts days from a premium subscription. 'days' can be negative for deduction."""
