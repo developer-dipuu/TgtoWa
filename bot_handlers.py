@@ -161,13 +161,19 @@ class BotHandlers:
             await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
             return
 
-        if queue_manager.is_user_in_queue(user.id):
-            position = queue_manager.get_queue_position(user.id)
-            await event.reply(
-                f"⏳ You're already in the queue!\n\nPosition: {position}",
-                buttons=[[Button.inline("📊 Check Queue", b"check_queue")]],
-                link_preview=False, parse_mode='html'
-            )
+        is_premium = db.is_premium(user.id)
+        current_queue_count = await queue_manager.get_user_queue_count(user.id)
+        limit = MAX_CONCURRENT_PREMIUM_REQUESTS if is_premium else MAX_CONCURRENT_REGULAR_REQUESTS
+
+        if current_queue_count >= limit:
+            if is_premium:
+                message = (f"⏳ **You've reached your limit!**\n\n"
+                        f"You currently have {current_queue_count}/{limit} items in the queue. "
+                        f"Please wait for one to complete before adding more.")
+            else:
+                message = "⏳ You're already in the queue! Please wait for your current request to complete."
+
+            await event.reply(message, buttons=[[Button.inline("📊 Check Queue", b"check_queue")]])
             return
 
         pack_input = None
@@ -175,6 +181,7 @@ class BotHandlers:
         is_emoji_pack = False
         
         if event.text:
+            # if a text 
             pack_input = extract_pack_name_from_url(event.text)
             if not pack_input:
                 await event.reply(
@@ -183,18 +190,12 @@ class BotHandlers:
                     "or forward a sticker/emoji from the pack you want to convert."
                 )
                 return
-            if 'addemoji' in event.text:
-                is_emoji_pack = True
 
         elif event.sticker:
-            # First, get the sticker set object from the sticker attributes
+            # if its a sticker
             for attr in event.sticker.attributes:
                 if isinstance(attr, DocumentAttributeSticker):
                     pack_input = attr.stickerset
-                    # Check if the pack is for emojis
-                    sticker_set = await self.converter.get_sticker_set(pack_input)
-                    if sticker_set and sticker_set.set.emojis:
-                        is_emoji_pack = True
                     break
             
             if not pack_input:
@@ -204,23 +205,25 @@ class BotHandlers:
                 return
 
         elif event.document and hasattr(event.document, 'attributes'):
-            # This handles custom emojis sent from the emoji panel or forwarded
+            # if anything else is sent check if its a custom emoji
             for attr in event.document.attributes:
                 if isinstance(attr, DocumentAttributeCustomEmoji):
                     pack_input = attr.stickerset
-                    is_emoji_pack = True
                     break
             
             if not pack_input:
-                # This message is for documents that aren't recognized as emojis
+                # if that document aint an emoji
                  await event.reply(
                     "❌ **Invalid input!**\n\n"
                     "Please send a valid Telegram sticker or emoji pack link, "
                     "or forward a sticker/emoji from the pack you want to convert."
                 )
-        # Fetch the sticker/emoji set to get its actual name
+                 return
+        # Fetch the sticker/emoji set to get its actual name and type
         try:
             sticker_set = await self.converter.get_sticker_set(pack_input)
+            is_emoji_pack = sticker_set.set.emojis
+
             if sticker_set and sticker_set.set:
                 pack_display_name = sticker_set.set.title
             else:
@@ -236,21 +239,39 @@ class BotHandlers:
         # Log the request to the database
         log_id = db.log_conversion_request(user.id, str(pack_input), is_emoji_pack)
 
+        pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
+        pack_url = f"https://t.me/{pack_type_url}/{sticker_set.set.short_name}"
+
         position = await queue_manager.add_to_queue(
             user.id, user_display_name, event.chat_id,
-            event.message.id, pack_input, log_id
+            event.message.id, pack_input, log_id, is_premium
         )
-        
-        await event.reply(
-            f"<b>✅ Added to conversion queue!</b>\n\n"
-            f"📦 Pack: <code>{pack_display_name}</code>\n📍 Position: {position}\n\n"
-            f"<blockquote>I'll notify you when the conversion starts!</blockquote>",
+        if is_premium:
+            current_queue_count = await queue_manager.get_user_queue_count(user.id)
+            slots_left = MAX_CONCURRENT_PREMIUM_REQUESTS - current_queue_count
+            message = (f"<b>⭐ VIP Status Confirmed!</b>\n\n"
+           f"Your pack: <b><a href=\"{pack_url}\">{pack_display_name}</a></b> has been fast-tracked to position <b>{position}</b>.\n")
+
+            if slots_left > 0:
+                message += f"<blockquote>As a premium user, you can still add <b>{slots_left}</b> more pack(s) to the queue. Keep 'em coming!</blockquote>\n"
+
+            message += "\n<b>I'll notify you when the conversion starts!</b>"
+        else:
+            message = (f"<b>✅ Added to conversion queue!</b>\n\n"
+            f"📦 Pack: <a href=\"{pack_url}\">{pack_display_name}</a>\n📍 Position: {position}\n\n"
+            f"<blockquote>I'll notify you when the conversion starts!</blockquote>")
+
+        await event.reply(message,
             buttons=[[Button.inline("📊 Check Queue", b"check_queue")]],
             link_preview=False, parse_mode='html'
         )
 
-        if position == 1 and not self.processing_lock.locked():
-            asyncio.create_task(self.process_queue())
+        if not self.processing_lock.locked():
+            # Check if anyone is processing before starting a new process_queue task
+            is_processing = queue_manager.get_queue_stats()["currently_processing"]
+            if not is_processing:
+                asyncio.create_task(self.process_queue())
+
 
     async def process_queue(self):
         """Process the conversion queue."""
@@ -280,6 +301,8 @@ class BotHandlers:
                     pack_title = sticker_set.set.title
                     total_stickers = len(sticker_set.documents)
                     num_packs = (total_stickers + MAX_STICKERS_PER_PACK - 1) // MAX_STICKERS_PER_PACK
+                    pack_short_name = sticker_set.set.short_name
+                    is_emoji_pack = sticker_set.set.emojis
 
                     estimated_time = estimate_wait_time(sticker_set.documents, num_packs)
 
@@ -290,22 +313,29 @@ class BotHandlers:
                         text=f"🚀 Starting conversion for your pack...\n"
                             f"🤔 Estimated time: {estimated_time}"
                     )
-                    if sticker_set.set.emojis:
-                        await self.client.send_message(
-                            item.chat_id,
-                            f"📊 Pack Details:\n• Name: `{pack_title}`\n• Total emojis: {total_stickers}\n"
-                            f"• This will create {num_packs} .wastickers file(s)."
-                        )
+
+
+                    if is_emoji_pack:
+                        pack_type_url = "addemoji"
+                        item_name = "emojis"
                     else:
-                        await self.client.send_message(
-                            item.chat_id,
-                            f"📊 Pack Details:\n• Name: `{pack_title}`\n• Total stickers: {total_stickers}\n"
-                            f"• This will create {num_packs} .wastickers file(s)."
-                        )
+                        pack_type_url = "addstickers"
+                        item_name = "stickers"
+                        
+                    pack_url = f"https://t.me/{pack_type_url}/{pack_short_name}"
+
+                    # Construct the message
+                    message = (f"📊 <b>Pack Details:</b>\n"
+                            f"• Name: <a href=\"{pack_url}\">{pack_title}</a>\n"
+                            f"• Total {item_name}: {total_stickers}\n"
+                            f"• This will create {num_packs} .wastickers file(s).")
+                    
+                    await self.client.send_message(item.chat_id, message, parse_mode='html', link_preview=False)
+                    
                     wastickers_files = await self.converter.create_wastickers_pack(sticker_set, item.username)
                     
                     if wastickers_files:
-                        await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending {len(wastickers_files)} file(s)...")
+                        await self.client.send_message(item.chat_id, f"✅ Conversion complete for <b><a href=\"{pack_url}\">{pack_title}</a></b>! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
                         for i, file_path in enumerate(wastickers_files):
                             caption = f"📦 {os.path.basename(file_path)} - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
                             await self.client.send_file(item.chat_id, file_path, caption=caption)
@@ -316,7 +346,7 @@ class BotHandlers:
                         await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
                         success = True
                     else:
-                        await self.client.send_message(item.chat_id, f"❌ Failed to convert the pack '{pack_title}'. There might have been an issue with the sticker files themselves.")
+                        await self.client.send_message(item.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{pack_title}</a></b>. There might have been an issue with the sticker files themselves.", link_preview=False, parse_mode='html')
                         # success is still false
 
                 except Exception as e:

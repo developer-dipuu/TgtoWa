@@ -24,6 +24,8 @@ SUPPORT_GROUP_LINK = "@your_support_group_here"    # if you're done editing this
 
 # Sticker/emoji pack constraints
 MAX_STICKERS_PER_PACK = 30
+MAX_CONCURRENT_REGULAR_REQUESTS = 1
+MAX_CONCURRENT_PREMIUM_REQUESTS = 3
 WEBP_QUALITY = 80  # Default qualty at the start of the compression
 MAX_ICON_SIZE = 50 * 1024      # 50KB
 STICKER_DIMENSIONS = (512, 512)
