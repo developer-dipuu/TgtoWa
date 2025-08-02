@@ -72,17 +72,22 @@ class BotHandlers:
         self.client.add_event_handler(self.handle_message, events.NewMessage(func=lambda e: e.is_private and not e.text.startswith('/') and (e.text or e.sticker)))
         self.client.add_event_handler(self.handle_callback_query, events.CallbackQuery(func=lambda e: e.is_private))
 
+    
     def _create_channel_join_buttons(self) -> list:
-        """Dynamically creates the inline keyboard for joining required channels."""
+        """Dynamically creates buttons for both public and private channels."""
         keyboard = []
-        for i in range(0, len(REQUIRED_CHANNELS), 2):
+        # iterate through the list of tuples from config.py
+        for i in range(0, len(REQUIRED_CHANNELS_FORMATTED), 2):
             row = []
-            channel1_username = REQUIRED_CHANNELS[i].replace('@', '')
-            row.append(Button.url(f"Join {channel1_username}", url=f"https://t.me/{channel1_username}"))
 
-            if i + 1 < len(REQUIRED_CHANNELS):
-                channel2_username = REQUIRED_CHANNELS[i+1].replace('@', '')
-                row.append(Button.url(f"Join {channel2_username}", url=f"https://t.me/{channel2_username}"))
+            # First Button in Row
+            name1, link1 = REQUIRED_CHANNELS_FORMATTED[i][:2]
+            row.append(Button.url(f"Join {name1}", url=link1))
+
+            # Second Button in Row (if it exists)
+            if i + 1 < len(REQUIRED_CHANNELS_FORMATTED):
+                name2, link2 = REQUIRED_CHANNELS_FORMATTED[i+1][:2]
+                row.append(Button.url(f"Join {name2}", url=link2))
             
             keyboard.append(row)
         
@@ -91,17 +96,29 @@ class BotHandlers:
 
     async def check_user_membership(self, user_id: int) -> bool:
         """Check if user is a member of required channels."""
-        if not REQUIRED_CHANNELS:
+        if not REQUIRED_CHANNELS_FORMATTED:
             return True
         try:
-            for channel in REQUIRED_CHANNELS:
+            # iterate through the list of tuples ("Name", "link")
+            for element in REQUIRED_CHANNELS_FORMATTED:
+                # only valid format lenths are allowed
+                if len(element)==2:
+                    name, link = element
+                elif len(element)==3:
+                    name = element[0]
+                    link = element[2]
+                else:
+                    continue
+
                 try:
-                    await self.client(GetParticipantRequest(channel=channel, participant=user_id))
+                    # Use the link for the check
+                    await self.client(GetParticipantRequest(channel=link, participant=user_id))
                 except UserNotParticipantError:
-                    logger.warning(f"User {user_id} is not a participant in {channel}.")
+                    logger.warning(f"User {user_id} is not a participant in {name}.")
                     return False
                 except Exception as e:
-                    logger.error(f"Could not check membership for user {user_id} in {channel}: {e}")
+                    # cases where the link is invalid or the bot isn't an admin
+                    logger.error(f"Could not check membership for user {user_id} in {name}: {e}")
                     return False
             return True
         except Exception as e:
@@ -116,9 +133,9 @@ class BotHandlers:
         full_name = f"{user.first_name} {user.last_name or ''}".strip()
         db.add_or_update_user(user.id, user.username, full_name)
 
-        if not await self.check_user_membership(user.id):
-            await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons())
-            return
+        # if not await self.check_user_membership(user.id):
+        #     await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
+        #     return
         
         buttons = [
             [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]
@@ -141,14 +158,15 @@ class BotHandlers:
         user = await event.get_sender()
         
         if not await self.check_user_membership(user.id):
-            await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons())
+            await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
             return
 
         if queue_manager.is_user_in_queue(user.id):
             position = queue_manager.get_queue_position(user.id)
             await event.reply(
                 f"⏳ You're already in the queue!\n\nPosition: {position}",
-                buttons=[[Button.inline("📊 Check Queue", b"check_queue")]]
+                buttons=[[Button.inline("📊 Check Queue", b"check_queue")]],
+                link_preview=False, parse_mode='html'
             )
             return
 
@@ -224,10 +242,11 @@ class BotHandlers:
         )
         
         await event.reply(
-            f"✅ Added to conversion queue!\n\n"
-            f"📦 Pack: {pack_display_name}\n📍 Position: {position}\n\n"
-            f"I'll notify you when the conversion starts!",
-            buttons=[[Button.inline("📊 Check Queue", b"check_queue")]]
+            f"<b>✅ Added to conversion queue!</b>\n\n"
+            f"📦 Pack: <code>{pack_display_name}</code>\n📍 Position: {position}\n\n"
+            f"<blockquote>I'll notify you when the conversion starts!</blockquote>",
+            buttons=[[Button.inline("📊 Check Queue", b"check_queue")]],
+            link_preview=False, parse_mode='html'
         )
 
         if position == 1 and not self.processing_lock.locked():
@@ -294,7 +313,7 @@ class BotHandlers:
                         success = True
                         status_for_db = "completed"
                         
-                        await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like 'Sticker Maker' on your phone. Enjoy!")
+                        await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
                         success = True
                     else:
                         await self.client.send_message(item.chat_id, f"❌ Failed to convert the pack '{pack_title}'. There might have been an issue with the sticker files themselves.")
@@ -676,9 +695,9 @@ class BotHandlers:
         if data == "check_membership":
             if await self.check_user_membership(user.id):
                 buttons = [[Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]]
-                await event.edit("✅ Great! You're now a member.\n\n" + self.START_MESSAGE, buttons=buttons)
+                await event.edit("✅ Great! You're now a member.\n\n" + self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
             else:
-                await event.edit("❌ You still need to join the required channels.\n\n" + CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons())
+                await event.edit("❌ You still need to join the required channels.\n\n" + CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
         
         elif data == "check_queue":
             position = queue_manager.get_queue_position(user.id)

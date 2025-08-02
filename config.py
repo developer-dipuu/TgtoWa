@@ -3,19 +3,24 @@ Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter 
 """
 
 # Telegram API Credentials
-API_ID =  # Your API ID (must)
-API_HASH = "" # Your API HASH (must)
-BOT_TOKEN = "" # Your bot token (must)
+API_ID = 20430589 # Your API ID (must)
+API_HASH = "d8a15ae0a1320abbc27c5482c62e8ed0" # Your API HASH (must)
+BOT_TOKEN = "8267507113:AAGytCxuWx9hjfjOCjihHJrU1zV9SwCcy8Y" # Your bot token (must)
 
-OWNER_ID =  # 👈 Replace with your Telegram User ID (needed for approving admins and users)
+OWNER_ID = 2128132096 # 👈 Replace with your Telegram User ID (needed for approving admins and users)
 
-# Required channels for membership verification
-REQUIRED_CHANNELS = []             # 👉["@your_channels_here", "@your_channels_here"]👈  Use this format Only
-                                   # Just add your channel here start and help message will be appended automaticlly
-                                   # Just replace @your_support_group_here in the HELP_MESSAGE
+# ‼️ Must READ
+''' Required channels to use this bot (leave empty if you don't want to force user to join)
+For public channel/group add a tuple like this ("Name", "@username")
+For private channel/group add a tuple like this ("Name", "link", -1212324141) 
+-1212324141 is your channel/group id get it by forwarding any of your channel/group's message to @username_to_id_bot (or @MissRose_bot and reply /id to that message)
+ ⚠️⚠️⚠️ [("Public_Channel_Name", "@channel_1_username"), ("Private_Channel_Name", "https://t.me/+abcdefghijk", -34876824274 )] ⚠️⚠️⚠️  Use this format Only '''
+
+REQUIRED_CHANNELS = [("Test", "https://t.me/+Qhd_ao_OjUU2OGFl", -1001552682716), ("Contact", "@Please_contact_me_here")]
+
 
 # Support group foor bot related queries (will be used in help message)
-SUPPORT_GROUP_LINK = "@your_support_group_here"
+SUPPORT_GROUP_LINK = "@your_support_group_here"    # if you're done editing this far you are good to go
 
 # Sticker/emoji pack constraints
 MAX_STICKERS_PER_PACK = 30
@@ -28,8 +33,12 @@ ICON_DIMENSIONS = (96, 96)
 TEMP_DIR = "temp"
 OUTPUT_DIR = "output"
 
+REQUIRED_CHANNELS_FORMATTED = [
+    (name, link, *rest) if link.startswith(('https://t.me/', 'http://t.me/', 'https://telegram.me/', 'http://telegram.me/', 't.me/')) else (name, f"https://t.me/{link.lstrip("@")}", *rest) for (name, link, *rest) in REQUIRED_CHANNELS
+]
+
 # Channel list converted to string 
-_channel_list_str = "\n".join([f"• {channel}" for channel in REQUIRED_CHANNELS])
+_channel_list_str = "\n".join([f"• <b><a href=\"{channel[1]}\">{channel[0]}</a></b>" for channel in REQUIRED_CHANNELS_FORMATTED])
 
 # Messages
 
@@ -61,7 +70,7 @@ You have two simple options:
 👉 <b>How to Add Stickers to WhatsApp</b>
 
 1.  <b>📱 Install the App</b>: 
-<blockquote>You'll need a helper app. We recommend <b>Sticker Maker for WhatsApp</b>.
+<blockquote>You'll need a helper app. We recommend <b>Sticker Maker</b>.
 
 <b>🔗Google Play Link</b>: <b><a href="https://play.google.com/store/apps/details?id=com.marsvard.stickermakerforwhatsapp">Click here</a></b>
 <b>🔗App Store Link</b>: <b><a href="https://apps.apple.com/us/app/sticker-maker-studio/id1443326857">Click here</a></b>
