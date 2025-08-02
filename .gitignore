@@ -1,4 +1,7 @@
 venv/
 __pycache__/
+output/
+temp/
+extra_shits/
 *.session
 *.db
