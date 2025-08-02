@@ -86,7 +86,6 @@ class StickerConverter:
                     new_img.save(output_path, 'WEBP', quality=WEBP_QUALITY)
                 return True
         except Exception as e:
-            
             logger.error(f"Failed to convert {input_path} to WebP: {e}")
             return False
     
