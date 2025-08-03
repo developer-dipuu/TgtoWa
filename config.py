@@ -3,11 +3,11 @@ Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter 
 """
 
 # Telegram API Credentials
-API_ID = 20430589 # Your API ID (must)
-API_HASH = "d8a15ae0a1320abbc27c5482c62e8ed0" # Your API HASH (must)
-BOT_TOKEN = "8267507113:AAGytCxuWx9hjfjOCjihHJrU1zV9SwCcy8Y" # Your bot token (must)
+API_ID =  # Your API ID (must)
+API_HASH = "" # Your API HASH (must)
+BOT_TOKEN = "" # Your bot token (must)
 
-OWNER_ID = 2128132096 # 👈 Replace with your Telegram User ID (needed for approving admins and users)
+OWNER_ID =  # 👈 Replace with your Telegram User ID (needed for approving admins and users)
 
 # ‼️ Must READ
 ''' Required channels to use this bot (leave empty if you don't want to force user to join)
@@ -16,11 +16,11 @@ For private channel/group add a tuple like this ("Name", "link", -1212324141)
 -1212324141 is your channel/group id get it by forwarding any of your channel/group's message to @username_to_id_bot (or @MissRose_bot and reply /id to that message)
  ⚠️⚠️⚠️ [("Public_Channel_Name", "@channel_1_username"), ("Private_Channel_Name", "https://t.me/+abcdefghijk", -34876824274 )] ⚠️⚠️⚠️  Use this format Only '''
 
-REQUIRED_CHANNELS = [("Test", "https://t.me/+Qhd_ao_OjUU2OGFl", -1001552682716), ("Contact", "@Please_contact_me_here")]
+REQUIRED_CHANNELS = []
 
 
-# Support group foor bot related queries (will be used in help message)
-SUPPORT_GROUP_LINK = "@your_support_group_here"    # if you're done editing this far you are good to go
+# Support group for bot related queries (will be used in start, help, premium, etc messages)
+SUPPORT_GROUP = "@your_support_group_here"    # if you're done editing this far you are good to go
 
 # Sticker/emoji pack constraints
 MAX_STICKERS_PER_PACK = 30
@@ -34,6 +34,8 @@ ICON_DIMENSIONS = (96, 96)
 # File paths
 TEMP_DIR = "temp"
 OUTPUT_DIR = "output"
+
+SUPPORT_GROUP_LINK = SUPPORT_GROUP if SUPPORT_GROUP.startswith(('https://t.me/', 'http://t.me/', 'https://telegram.me/', 'http://telegram.me/', 't.me/')) else f"https://t.me/{SUPPORT_GROUP.lstrip("@")}"
 
 REQUIRED_CHANNELS_FORMATTED = [
     (name, link, *rest) if link.startswith(('https://t.me/', 'http://t.me/', 'https://telegram.me/', 'http://telegram.me/', 't.me/')) else (name, f"https://t.me/{link.lstrip("@")}", *rest) for (name, link, *rest) in REQUIRED_CHANNELS
@@ -55,7 +57,7 @@ I can convert any <b>Telegram sticker or emoji pack</b> directly into <b>WhatsAp
 
 For a full guide on features and how to import the stickers to WhatsApp, please use the /help command.
 
-⚠️ <b>Note:</b> You must join the following channels to use this bot:
+⚠️ <b>Note:</b> You must be a member of following channels/groups to use this bot:
 {_channel_list_str}
 """
 
@@ -66,6 +68,12 @@ HELP_MESSAGE = f"""
 You have two simple options:
 <blockquote>1.  <b>Send a Link</b>: Copy the sticker or emoji pack's link and send it to me.</blockquote>
 <blockquote>2.  <b>Send a Sticker/Emoji</b>: Just send any sticker or emoji from the pack you want. I'll handle the rest.</blockquote>
+
+---
+
+✨ <b>Explore More Features</b>
+<blockquote>• Use /commands to see a full list of all available commands.
+• Use /premium to check your premium status and learn about the benefits.</blockquote>
 
 ---
 
@@ -89,16 +97,19 @@ That's it, your stickers are ready!
 
 📋 <b>Important Notes</b>
 
-• Packs with more than 30 stickers will be split into multiple files.
+• Packs with more than 30 stickers will be split into multiple files since WhatsApp supports only 30 stickers per pack.
 
 ⏱️ <b>Queue System</b>
 
-• During busy times, you'll be placed in a queue. Use the "Check Queue" button to see your position.
+• During busy times, your request is placed in a queue to ensure fair processing.
+• You can check your position at any time using the /queue command.
+• ⭐ Premium users get priority and are moved to the front of the line!
+
 
 💬 <b>Support</b>
 
 If you run into any issues or have questions, please join our support group for assistance.
-<blockquote><b>Support Group</b>: <b>{SUPPORT_GROUP_LINK}</b></blockquote>
+<blockquote><b>Support Group</b>: <b>{SUPPORT_GROUP}</b></blockquote>
 
 """
 
@@ -112,3 +123,16 @@ To use this bot, you must join these channels/groups first:
 
 After joining try again!
 """
+
+COMMANDS_MESSAGE = """
+🤖 <b>Here are the commands you can use:</b>
+
+• /start - 👋 Displays the welcome message.
+• /help - 📖 Shows the detailed help guide.
+• /queue - 📊 Checks your current position in the conversion queue.
+• /mystats - 📈 Shows your usage statistics and current role.
+• /premium - ⭐ Displays your premium status and its benefits.
+
+Just send any of these commands to get started!
+"""
+

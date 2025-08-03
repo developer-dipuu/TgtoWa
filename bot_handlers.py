@@ -52,8 +52,10 @@ class BotHandlers:
         # user commands
         self.client.add_event_handler(self.start_command, events.NewMessage(pattern='/start', func=lambda e: e.is_private))
         self.client.add_event_handler(self.help_command, events.NewMessage(pattern='/help', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.queue_command, events.NewMessage(pattern='/queue', func=lambda e: e.is_private))
         self.client.add_event_handler(self.mystats_command, events.NewMessage(pattern='/mystats', func=lambda e: e.is_private))
         self.client.add_event_handler(self.premium_command, events.NewMessage(pattern='/premium', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.commands_command, events.NewMessage(pattern='/commands', func=lambda e: e.is_private))
         # admin/owner commands
         # promote/demote admin (owner only)
         self.client.add_event_handler(self.promote_command, events.NewMessage(pattern=r'/promote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
@@ -126,32 +128,6 @@ class BotHandlers:
             logger.error(f"General error in check_user_membership for user {user_id}: {e}")
             return False
 
-    @check_banned
-    async def start_command(self, event: events.NewMessage.Event):
-        """Handle /start command."""
-        user = await event.get_sender()
-        # Log user on /start
-        full_name = f"{user.first_name} {user.last_name or ''}".strip()
-        db.add_or_update_user(user.id, user.username, full_name)
-
-        # if not await self.check_user_membership(user.id):
-        #     await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
-        #     return
-        
-        buttons = [
-            [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]
-        ]
-        await event.reply(self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
-        raise StopPropagation
-
-    @check_banned
-    async def help_command(self, event: events.NewMessage.Event):
-        """Handle /help command."""
-        buttons = [
-            [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("🏠 Back to Start", b"start")]
-        ]
-        await event.reply(HELP_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
-        raise StopPropagation
 
     @check_banned
     async def handle_message(self, event: events.NewMessage.Event):
@@ -412,6 +388,150 @@ class BotHandlers:
                 return None
         return None
 
+    # user commands
+    @check_banned
+    async def start_command(self, event: events.NewMessage.Event):
+        """Handle /start command."""
+        user = await event.get_sender()
+        # Log user on /start
+        full_name = f"{user.first_name} {user.last_name or ''}".strip()
+        db.add_or_update_user(user.id, user.username, full_name)
+
+        # if not await self.check_user_membership(user.id):
+        #     await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
+        #     return
+        
+        buttons = [
+            [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
+            [Button.url("💬 Support Group", SUPPORT_GROUP_LINK), Button.inline("🤖 Commands", b"commands")]
+        ]
+        await event.reply(self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
+        raise StopPropagation
+
+    @check_banned
+    async def help_command(self, event: events.NewMessage.Event):
+        """Handle /help command."""
+        buttons = [
+            [Button.inline("🏠 Back to Start", b"start"), Button.inline("🤖 Commands", b"commands")]
+        ]
+        await event.reply(HELP_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
+        raise StopPropagation
+
+    @check_banned
+    async def mystats_command(self, event: events.NewMessage.Event):
+        """Displays the user's current status and conversion stats."""
+        user = await event.get_sender()
+        
+        # user role
+        role = "👤 Regular User"
+        if db.is_owner(user.id):
+            role = "👑 Owner"
+        elif db.is_admin(user.id):
+            role = "👮‍♂️ Admin"
+        elif db.is_premium(user.id):
+            role = "⭐ Premium User"
+            duration_left = db.get_premium_duration_left(user.id)
+            if duration_left:
+                days = duration_left.days
+                hours = duration_left.seconds // 3600
+                minutes = (duration_left.seconds % 3600) // 60
+                role += f"\n⏳ **Expires in**: {days}d {hours}h {minutes}m"
+            
+        # get conversion stats
+        stats = db.get_user_stats(user.id)
+        
+        message = (
+            f"📊 **Your Stats**\n\n"
+            f"**Status**: {role}\n\n"
+            f"**Conversions Log**:\n"
+            f"  • Total Requests: `{stats['total']}`\n"
+            f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
+            f"  • ❌ Failed: `{stats['failed']}`"
+        )
+        
+        await event.reply(message)
+        logger.info(f"User {user.id} has fetched their stats.")
+        raise StopPropagation
+
+    async def _get_premium_message_text(self, user_id: int) -> str:
+        """Generates the dynamic premium status message for a user."""
+        # Base message with premium benefits
+        benefits_message = (
+            f"<b>Premium Benefits Include:</b>\n"
+            f"  • 🚀 <b>Priority Queue:</b> Your requests jump to the front of the line.\n"
+            f"  • ⚙️ <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.\n"
+            f"  • 💬 <b>Priority Support:</b> Get faster help in the support group."
+        )
+
+        if db.is_premium(user_id):
+            duration_left = db.get_premium_duration_left(user_id)
+            days = duration_left.days
+            hours = duration_left.seconds // 3600
+            
+            status_message = (
+                f"⭐ <b>You have an active Premium subscription!</b>\n"
+                f"<i>Expires in: {days} days and {hours} hours.</i>\n\n"
+            )
+        
+        else:
+            status_message = (
+                f"❌ <b>You are not currently a Premium user.</b>\n\n"
+                f"Contact an admin at <b>{SUPPORT_GROUP}</b> to upgrade and unlock these great features!\n\n"
+            )
+        
+        return status_message + benefits_message
+
+
+    @check_banned
+    async def premium_command(self, event: events.NewMessage.Event):
+        """Displays the user's premium status and benefits."""
+        user = await event.get_sender()
+        
+        
+        message_text = await self._get_premium_message_text(user.id)
+        buttons = [
+            [Button.url("💬 Contact Admin", SUPPORT_GROUP_LINK)],
+            [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
+        ]
+
+        await event.reply(message_text, buttons=buttons, parse_mode='html', link_preview=False)
+        raise StopPropagation
+
+    @check_banned
+    async def queue_command(self, event: events.NewMessage.Event):
+        """Command to check user's position."""
+        user = await event.get_sender()
+        position = queue_manager.get_queue_position(user.id)
+        stats = queue_manager.get_queue_stats()
+
+        if position:
+            # User is in the queue
+            message = QUEUE_CHECK_MESSAGE.format(
+                position=position,
+                total=stats["total_waiting"] + (1 if stats["currently_processing"] else 0)
+            )
+            buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
+        else:
+            # User is not in the queue
+            message = f"📊 You're not in the queue. Total users waiting: {stats['total_waiting']}."
+            buttons = [
+                [Button.inline("🔄 Refresh", b"check_queue")],
+                [Button.inline("🏠 Back to Start", b"start")]
+            ]
+        
+        await event.reply(message, buttons=buttons)
+        raise StopPropagation
+    
+    @check_banned
+    async def commands_command(self, event: events.NewMessage.Event):
+        """Handles the /commands command."""
+        buttons = [
+            [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
+        ]
+        await event.reply(COMMANDS_MESSAGE, buttons=buttons, parse_mode='html')
+        raise StopPropagation
+
+    # owner's command
     async def promote_command(self, event: events.NewMessage.Event):
         """Owner command to promote a user to admin."""
         if not db.is_owner(event.sender_id):
@@ -433,6 +553,7 @@ class BotHandlers:
 
         raise StopPropagation
 
+    # owner's command
     async def demote_command(self, event: events.NewMessage.Event):
         """Owner command to demote an admin."""
         if not db.is_owner(event.sender_id):
@@ -456,6 +577,7 @@ class BotHandlers:
 
         raise StopPropagation
 
+    # Admins commands
     async def add_premium_command(self, event: events.NewMessage.Event):
         """Admin command to add a premium user."""
         if not db.is_admin(event.sender_id):
@@ -669,75 +791,6 @@ class BotHandlers:
         raise StopPropagation
     
 
-    @check_banned
-    async def mystats_command(self, event: events.NewMessage.Event):
-        """Displays the user's current status and conversion stats."""
-        user = await event.get_sender()
-        
-        # user role
-        role = "👤 Regular User"
-        if db.is_owner(user.id):
-            role = "👑 Owner"
-        elif db.is_admin(user.id):
-            role = "👮‍♂️ Admin"
-        elif db.is_premium(user.id):
-            role = "⭐ Premium User"
-            duration_left = db.get_premium_duration_left(user.id)
-            if duration_left:
-                days = duration_left.days
-                hours = duration_left.seconds // 3600
-                minutes = (duration_left.seconds % 3600) // 60
-                role += f"\n⏳ **Expires in**: {days}d {hours}h {minutes}m"
-            
-        # get conversion stats
-        stats = db.get_user_stats(user.id)
-        
-        message = (
-            f"📊 **Your Stats**\n\n"
-            f"**Status**: {role}\n\n"
-            f"**Conversions Log**:\n"
-            f"  • Total Requests: `{stats['total']}`\n"
-            f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
-            f"  • ❌ Failed: `{stats['failed']}`"
-        )
-        
-        await event.reply(message)
-        logger.info(f"User {user.id} has fetched their stats.")
-        raise StopPropagation
-    
-    @check_banned
-    async def premium_command(self, event: events.NewMessage.Event):
-        """Displays the user's premium status and benefits."""
-        user = await event.get_sender()
-        
-        # Base message with premium benefits
-        benefits_message = (
-            f"<b>Premium Benefits Include:</b>\n"
-            f"  • 🚀 <b>Priority Queue:</b> Your requests jump to the front of the line.\n"
-            f"  • ⚙️ <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.\n"
-            f"  • 💬 <b>Priority Support:</b> Get faster help in the support group."
-        )
-
-        if db.is_premium(user.id):
-            duration_left = db.get_premium_duration_left(user.id)
-            days = duration_left.days
-            hours = duration_left.seconds // 3600
-            
-            status_message = (
-                f"⭐ <b>You have an active Premium subscription!</b>\n"
-                f"<i>Expires in: {days} days and {hours} hours.</i>\n\n"
-            )
-            message = status_message + benefits_message
-        else:
-            status_message = (
-                f"❌ <b>You are not currently a Premium user.</b>\n\n"
-                f"Contact an admin at <b>{SUPPORT_GROUP_LINK}</b> to upgrade and unlock these great features!\n\n"
-            )
-            message = status_message + benefits_message
-
-        await event.reply(message, parse_mode='html')
-        raise StopPropagation
-
     # silent ban command
     async def sban_command(self, event: events.NewMessage.Event):
         """Admin command to SILENTLY ban a user."""
@@ -842,7 +895,10 @@ class BotHandlers:
 
         if data == "check_membership":
             if await self.check_user_membership(user.id):
-                buttons = [[Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]]
+                buttons = [
+                    [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
+                    [Button.url("💬 Support Group", SUPPORT_GROUP_LINK), Button.inline("🤖 Commands", b"commands")]
+                ]
                 await event.edit("✅ Great! You're now a member.\n\n" + self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
             else:
                 await event.edit("❌ You still need to join the required channels.\n\n" + CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
@@ -863,10 +919,13 @@ class BotHandlers:
                     position=position,
                     total=stats["total_waiting"] + (1 if stats["currently_processing"] else 0)
                 )
+                buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
             else:
                 message = f"📊 You're not in the queue. Total users waiting: {stats['total_waiting']}."
-            
-            buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
+                buttons = [
+                    [Button.inline("🔄 Refresh", b"check_queue")],
+                    [Button.inline("🏠 Back to Start", b"start")]
+                ]
             if position is None:
                 buttons.append([Button.inline("🏠 Back to Start", b"start")])
             try:
@@ -876,13 +935,27 @@ class BotHandlers:
         
         elif data == "help":
             buttons = [
-                [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("🏠 Back to Start", b"start")]
+                [Button.inline("🏠 Back to Start", b"start"), Button.inline("🤖 Commands", b"commands")]
             ]
             await event.edit(HELP_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
 
         elif data == "start":
             buttons = [
-                [Button.inline("📊 Check Queue", b"check_queue"), Button.inline("❓ Help", b"help")]
+                [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
+                [Button.url("💬 Support Group", SUPPORT_GROUP_LINK), Button.inline("🤖 Commands", b"commands")]
             ]
             await event.edit(self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
+        
+        elif data == "premium":
+            message_text = await self._get_premium_message_text(user.id)
+            buttons = [
+                [Button.url("💬 Contact Admin", SUPPORT_GROUP_LINK)],
+                [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
+            ]
+            await event.edit(message_text, buttons=buttons, parse_mode='html', link_preview=False)
 
+        elif data == "commands":
+            buttons = [
+                [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
+            ]
+            await event.edit(COMMANDS_MESSAGE, buttons=buttons, parse_mode='html')
