@@ -19,14 +19,14 @@ For private channel/group add a tuple like this ("Name", "link", -1212324141)
 REQUIRED_CHANNELS = []
 
 
-# Support group for bot related queries (will be used in start, help, premium, etc messages)
+# Support group for bot related queries (will be used in help message)
 SUPPORT_GROUP = "@your_support_group_here"    # if you're done editing this far you are good to go
 
 # Sticker/emoji pack constraints
 MAX_STICKERS_PER_PACK = 30
 MAX_CONCURRENT_REGULAR_REQUESTS = 1
 MAX_CONCURRENT_PREMIUM_REQUESTS = 3
-WEBP_QUALITY = 80  # Default qualty at the start of the compression
+WEBP_QUALITY = 80  # Default quality at the start of the compression
 MAX_ICON_SIZE = 50 * 1024      # 50KB
 STICKER_DIMENSIONS = (512, 512)
 ICON_DIMENSIONS = (96, 96)
