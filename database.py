@@ -180,7 +180,87 @@ def get_user_stats(user_id: int) -> dict:
             return {"total": stats['total_requests'], "succeeded": stats['succeeded_requests'], "failed": stats['failed_requests']}
     return {"total": 0, "succeeded": 0, "failed": 0}
 
+# fetching all user ids from database
+def get_all_user_ids() -> list[int]:
+    """Retrieves all user IDs from the database for broadcasting."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM users")
+        # fetchall returns a list of tuples like [(123,), (456,)]
+        return [row['user_id'] for row in cursor.fetchall()]
 
+def get_gstats() -> dict:
+    """Gathers all global statistics for the /gstats command."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM admins")
+        total_admins = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM banned_users")
+        total_banned = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM premium_users WHERE expiry_date > ?", (datetime.now(),))
+        active_premium = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT SUM(succeeded_requests), SUM(failed_requests) FROM user_stats")
+        total_succeeded, total_failed = cursor.fetchone()
+        
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        cursor.execute("SELECT status, COUNT(*) FROM conversion_log WHERE request_time >= ? GROUP BY status", (today_start,))
+        today_stats_raw = cursor.fetchall()
+        today_succeeded = sum(row[1] for row in today_stats_raw if row[0] == 'completed')
+        today_failed = sum(row[1] for row in today_stats_raw if row[0] == 'failed')
+        
+        return {
+            "total_users": total_users,
+            "total_admins": total_admins,
+            "total_banned": total_banned,
+            "active_premium": active_premium,
+            "total_succeeded": total_succeeded or 0,
+            "total_failed": total_failed or 0,
+            "today_succeeded": today_succeeded,
+            "today_failed": today_failed
+        }
+
+def get_gstats_premium_list() -> list:
+    """Gets a list of all active premium users for /gstats."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id, username, expiry_date FROM premium_users WHERE expiry_date > ? ORDER BY expiry_date ASC",
+            (datetime.now(),)
+        )
+        return cursor.fetchall()
+
+def get_gstats_top_users(limit: int = 50) -> list:
+    """Gets a list of top users by total requests."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id, full_name, total_requests FROM user_stats ORDER BY total_requests DESC LIMIT ?",
+            (limit,)
+        )
+        return cursor.fetchall()
+
+def get_gstats_admins_list() -> list:
+    """Gets a list of all admins."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, username FROM admins")
+        return cursor.fetchall()
+
+def get_gstats_banned_list() -> list:
+    """Gets a list of all banned users."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, reason, ban_date FROM banned_users ORDER BY ban_date DESC")
+        return cursor.fetchall()
+    
+    
 # --- Conversion Logging ---
 def log_conversion_request(user_id: int, pack_input: str, is_emoji: bool) -> int:
     """Logs the start of a conversion request and returns the log ID."""

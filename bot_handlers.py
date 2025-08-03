@@ -56,10 +56,12 @@ class BotHandlers:
         self.client.add_event_handler(self.mystats_command, events.NewMessage(pattern='/mystats', func=lambda e: e.is_private))
         self.client.add_event_handler(self.premium_command, events.NewMessage(pattern='/premium', func=lambda e: e.is_private))
         self.client.add_event_handler(self.commands_command, events.NewMessage(pattern='/commands', func=lambda e: e.is_private))
-        # admin/owner commands
-        # promote/demote admin (owner only)
+        
+        # owner commands
         self.client.add_event_handler(self.promote_command, events.NewMessage(pattern=r'/promote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.demote_command, events.NewMessage(pattern=r'/demote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.broadcast_command, events.NewMessage(pattern=r'/broadcast', func=lambda e: db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.gstats_command, events.NewMessage(pattern=r'/gstats', func=lambda e: db.is_owner(e.sender_id)))
         # Premium commands (admin use)
         self.client.add_event_handler(self.add_premium_command, events.NewMessage(pattern=r'/addpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.remove_premium_command, events.NewMessage(pattern=r'/removepremium(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
@@ -532,6 +534,144 @@ class BotHandlers:
         raise StopPropagation
 
     # owner's command
+    async def broadcast_command(self, event: events.NewMessage.Event):
+        """Owner command to broadcast a message to all users."""
+        
+        message_to_broadcast = None
+        text_to_broadcast = None
+        
+        # Check for -noforward flag first
+        no_forward = '-noforward' in event.text.lower()
+        
+        # Scenario 1: Replying to a message to broadcast its content
+        replied_msg = await event.get_reply_message()
+        if replied_msg:
+            message_to_broadcast = replied_msg
+        else:
+            # Scenario 2: Command with its own media/forward or just text
+            if event.media or event.message.forward:
+                # Use the command message itself if it contains media or is a forward
+                message_to_broadcast = event.message
+            else:
+                # Scenario 3: Extract text content from the command message
+                # This will strip '/broadcast' and '-noforward' to get only the message
+                command_parts = event.text.split()
+                
+                # Find where the actual message content begins
+                content_index = 1 # Start after '/broadcast'
+                if len(command_parts) > 1 and command_parts[1].lower() == '-noforward':
+                    content_index = 2 # Start after '/broadcast -noforward'
+                
+                if len(command_parts) > content_index:
+                    text_to_broadcast = " ".join(command_parts[content_index:])
+
+        # If no content could be determined, show usage instructions
+        if not message_to_broadcast and not text_to_broadcast:
+            await event.reply("ℹ️ **Usage:** Reply to a message with `/broadcast` or send `/broadcast <your message>`.\n\nAdd `-noforward` when replying to send as a copy instead of forwarding.")
+            return
+
+        user_ids = db.get_all_user_ids() # [cite: 1]
+        total_users = len(user_ids)
+        
+        status_msg = await event.reply(f"🚀 Starting broadcast to {total_users} users...")
+        
+        success_count = 0
+        fail_count = 0
+        
+        for user_id in user_ids:
+            try:
+                if text_to_broadcast:
+                    # If we only have text, we must send it as a new message.
+                    await self.client.send_message(user_id, text_to_broadcast, link_preview=False)
+                elif no_forward:
+                    # If -noforward is used, send a copy of the replied/forwarded message
+                    await self.client.send_message(user_id, message_to_broadcast)
+                else:
+                    # Otherwise, forward the replied/forwarded message
+                    await self.client.forward_messages(user_id, message_to_broadcast)
+                
+                success_count += 1
+            except Exception as e:
+                fail_count += 1
+                logger.warning(f"Failed to broadcast to user {user_id}: {e}")
+            
+            # A short delay to avoid hitting Telegram's API rate limits
+            await asyncio.sleep(0.1)
+
+        await status_msg.edit(
+            f"✅ **Broadcast Complete!**\n\n"
+            f"• Sent to: `{success_count}` users\n"
+            f"• Failed for: `{fail_count}` users"
+        )
+        raise StopPropagation
+
+    async def _gstats_send_list(self, event: events.CallbackQuery.Event, title: str, content: str, filename: str):
+        """Helper to send gstats lists, sending as a file if too long."""
+
+        buttons = [[Button.inline("⬅️ Back to Stats", b"gstats_back")]]
+        header = f"📋 <b>{title}</b>\n\n"
+
+        if not content.strip():
+            await event.edit(header + f"The list for <code>{title}</code> is empty.", buttons= buttons, link_preview=False, parse_mode='html')
+            return
+
+
+        if len(header + content) > 4000: # A bit less than 4096 to be safe
+            file_content = content.replace("`", "").replace("*", "") # Clean formatting for .txt
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(file_content)
+
+            # Delete the previous message and send a new one with the file
+            await event.delete()
+            await self.client.send_file(
+                event.chat_id,
+                filename,
+                caption=f"The list of **{title}** was too long, so I've sent it as a file.",
+                buttons=buttons
+            )
+            os.remove(filename)
+        else:
+            await event.edit(header + content, buttons=buttons, link_preview=False, parse_mode='html')
+
+
+    async def _get_gstats_message_and_buttons(self) -> tuple[str, list]:
+        """Helper to generate the main /gstats message and buttons."""
+        stats = db.get_gstats()
+        q_stats = queue_manager.get_queue_stats()
+
+        processing_user = q_stats['processing_user'] or "None"
+
+        message = (
+            f"📊 **Global Bot Statistics**\n\n"
+            f"👤 **Users:**\n"
+            f"  • Total Users: `{stats['total_users']}`\n"
+            f"  • Admins: `{stats['total_admins']}`\n"
+            f"  • Active Premium: `{stats['active_premium']}`\n"
+            f"  • Banned Users: `{stats['total_banned']}`\n\n"
+            f"⚙️ **Conversions (Overall):**\n"
+            f"  • ✅ Succeeded: `{stats['total_succeeded']}`\n"
+            f"  • ❌ Failed: `{stats['total_failed']}`\n\n"
+            f"📈 **Conversions (Today):**\n"
+            f"  • ✅ Succeeded: `{stats['today_succeeded']}`\n"
+            f"  • ❌ Failed: `{stats['today_failed']}`\n\n"
+            f"⏳ **Live Queue Status:**\n"
+            f"  • Waiting: `{q_stats['total_waiting']}`\n"
+            f"  • Currently Processing: `{processing_user}`"
+        )
+
+        buttons = [
+            [Button.inline("⭐ Premium Members", b"gstats_premium"), Button.inline("🏆 Top 50 Users", b"gstats_top_users")],
+            [Button.inline("👮‍♂️ Admins List", b"gstats_admins"), Button.inline("🚫 Banned List", b"gstats_banned")]
+        ]
+        return message, buttons
+
+    async def gstats_command(self, event: events.NewMessage.Event):
+        """Owner command to view global bot statistics."""
+        message, buttons = await self._get_gstats_message_and_buttons()
+        await event.reply(message, buttons=buttons)
+        raise StopPropagation
+
+    # owner's command
     async def promote_command(self, event: events.NewMessage.Event):
         """Owner command to promote a user to admin."""
         if not db.is_owner(event.sender_id):
@@ -926,8 +1066,6 @@ class BotHandlers:
                     [Button.inline("🔄 Refresh", b"check_queue")],
                     [Button.inline("🏠 Back to Start", b"start")]
                 ]
-            if position is None:
-                buttons.append([Button.inline("🏠 Back to Start", b"start")])
             try:
                 await event.edit(message, buttons=buttons)
             except Exception as e:
@@ -959,3 +1097,41 @@ class BotHandlers:
                 [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
             ]
             await event.edit(COMMANDS_MESSAGE, buttons=buttons, parse_mode='html')
+        
+
+        elif data.startswith("gstats_"):
+            action = data.split("_", 1)[1]
+
+            if action == "premium":
+                users = db.get_gstats_premium_list()
+                content = ""
+                for user in users:
+                    expiry = user['expiry_date'].strftime('%Y-%m-%d %H:%M')
+                    content += f"• <code>{user['user_id']}</code> (@{user['username'] or 'N/A'}) - Expires: <code>{expiry}</code>\n"
+                await self._gstats_send_list(event, "Active Premium Members", content, "premium_users.txt")
+
+            elif action == "top_users":
+                users = db.get_gstats_top_users()
+                content = ""
+                for i, user in enumerate(users, 1):
+                    content += f"{i}. <code>{user['user_id']}</code> ({user['full_name']}) - <b>{user['total_requests']}</b> requests\n"
+                await self._gstats_send_list(event, "Top 50 Users by Requests", content, "top_users.txt")
+
+            elif action == "admins":
+                users = db.get_gstats_admins_list()
+                content = ""
+                for user in users:
+                    content += f"• <code>{user['user_id']}</code> (@{user['username'] or 'N/A'})\n"
+                await self._gstats_send_list(event, "Admins List", content, "admins.txt")
+
+            elif action == "banned":
+                users = db.get_gstats_banned_list()
+                content = ""
+                for user in users:
+                    ban_date = user['ban_date'].strftime('%Y-%m-%d')
+                    content += f"• <code>{user['user_id']}</code> - Banned on <code>{ban_date}</code>\n  Reason: {user['reason']}\n\n"
+                await self._gstats_send_list(event, "Banned Users List", content, "banned_users.txt")
+
+            elif action == "back":
+                message, buttons = await self._get_gstats_message_and_buttons()
+                await event.edit(message, buttons=buttons)
