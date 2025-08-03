@@ -53,6 +53,7 @@ class BotHandlers:
         self.client.add_event_handler(self.start_command, events.NewMessage(pattern='/start', func=lambda e: e.is_private))
         self.client.add_event_handler(self.help_command, events.NewMessage(pattern='/help', func=lambda e: e.is_private))
         self.client.add_event_handler(self.mystats_command, events.NewMessage(pattern='/mystats', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.premium_command, events.NewMessage(pattern='/premium', func=lambda e: e.is_private))
         # admin/owner commands
         # promote/demote admin (owner only)
         self.client.add_event_handler(self.promote_command, events.NewMessage(pattern=r'/promote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
@@ -165,6 +166,7 @@ class BotHandlers:
         current_queue_count = await queue_manager.get_user_queue_count(user.id)
         limit = MAX_CONCURRENT_PREMIUM_REQUESTS if is_premium else MAX_CONCURRENT_REGULAR_REQUESTS
 
+        # max queue limit
         if current_queue_count >= limit:
             if is_premium:
                 message = (f"⏳ **You've reached your limit!**\n\n"
@@ -175,7 +177,8 @@ class BotHandlers:
 
             await event.reply(message, buttons=[[Button.inline("📊 Check Queue", b"check_queue")]])
             return
-
+        
+        # now time to extract pack details based on the type of message sent
         pack_input = None
         pack_display_name = "Unknown Pack"
         is_emoji_pack = False
@@ -219,6 +222,7 @@ class BotHandlers:
                     "or forward a sticker/emoji from the pack you want to convert."
                 )
                  return
+            
         # Fetch the sticker/emoji set to get its actual name and type
         try:
             sticker_set = await self.converter.get_sticker_set(pack_input)
@@ -234,37 +238,53 @@ class BotHandlers:
                 logger.error(f"Error fetching set name for user {user.id}: {e}")
                 pack_display_name = "the pack you sent" # Fallback on error
 
+        # get the user's name pack url
         user_display_name = get_user_display_name(user)
-
-        # Log the request to the database
-        log_id = db.log_conversion_request(user.id, str(pack_input), is_emoji_pack)
-
         pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
         pack_url = f"https://t.me/{pack_type_url}/{sticker_set.set.short_name}"
 
+        # Log the request to the database
+        log_id = db.log_conversion_request(user.id, pack_url, is_emoji_pack)
+
+        # send adding to queue message
+        placeholder_message = await event.reply("⌛ Adding to the queue...")
+
+        # add to queue and get position for this item
         position = await queue_manager.add_to_queue(
-            user.id, user_display_name, event.chat_id,
-            event.message.id, pack_input, log_id, is_premium
+                user_id=user.id,
+                username=user_display_name,
+                chat_id=event.chat_id,
+                message_id=event.message.id,
+                bot_reply_message_id=placeholder_message.id,
+                pack_input=pack_input,
+                log_id=log_id,
+                is_premium=is_premium
         )
-        if is_premium:
-            current_queue_count = await queue_manager.get_user_queue_count(user.id)
-            slots_left = MAX_CONCURRENT_PREMIUM_REQUESTS - current_queue_count
-            message = (f"<b>⭐ VIP Status Confirmed!</b>\n\n"
-           f"Your pack: <b><a href=\"{pack_url}\">{pack_display_name}</a></b> has been fast-tracked to position <b>{position}</b>.\n")
+        # detailed added to queue successful message string
+        if position != 1:
+            if is_premium:
+                current_queue_count = await queue_manager.get_user_queue_count(user.id)
+                slots_left = MAX_CONCURRENT_PREMIUM_REQUESTS - current_queue_count
+                final_message_text = (f"<b>⭐ VIP Status Confirmed!</b>\n\n"
+            f"Your pack: <b><a href=\"{pack_url}\">{pack_display_name}</a></b> has been fast-tracked to position <b>{position}</b>.\n")
 
-            if slots_left > 0:
-                message += f"<blockquote>As a premium user, you can still add <b>{slots_left}</b> more pack(s) to the queue. Keep 'em coming!</blockquote>\n"
+                if slots_left > 0:
+                    final_message_text += f"<blockquote>As a premium user, you can still add <b>{slots_left}</b> more pack(s) to the queue. Keep 'em coming!</blockquote>\n"
 
-            message += "\n<b>I'll notify you when the conversion starts!</b>"
-        else:
-            message = (f"<b>✅ Added to conversion queue!</b>\n\n"
-            f"📦 Pack: <a href=\"{pack_url}\">{pack_display_name}</a>\n📍 Position: {position}\n\n"
-            f"<blockquote>I'll notify you when the conversion starts!</blockquote>")
+                final_message_text += "\n<b>I'll notify you when the conversion starts!</b>"
+            else:
+                final_message_text = (f"<b>✅ Added to conversion queue!</b>\n\n"
+                f"📦 Pack: <a href=\"{pack_url}\">{pack_display_name}</a>\n📍 Position: {position}\n\n"
+                f"<blockquote>I'll notify you when the conversion starts!</blockquote>")
 
-        await event.reply(message,
-            buttons=[[Button.inline("📊 Check Queue", b"check_queue")]],
-            link_preview=False, parse_mode='html'
-        )
+            # finally edit the message with detailed one
+            await self.client.edit_message(
+                entity=placeholder_message.chat_id,
+                message=placeholder_message.id,
+                text=final_message_text,
+                buttons=[[Button.inline("📊 Check Queue", b"check_queue")],[Button.inline("❌ Cancel", data=f"cancel_{log_id}".encode())]],
+                link_preview=False, parse_mode='html'
+            )
 
         if not self.processing_lock.locked():
             # Check if anyone is processing before starting a new process_queue task
@@ -280,6 +300,16 @@ class BotHandlers:
                 item = await queue_manager.get_next_item()
                 if not item:
                     break
+
+                try: # edit the queue message
+                    await self.client.edit_message(
+                        entity=item.chat_id,
+                        message=item.bot_reply_message_id,
+                        text=f"⌛ Your request for the pack is now processing...",
+                        buttons=None
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not edit message {item.bot_reply_message_id} to remove cancel button: {e}")
 
                 start_time = datetime.now()
                 success = False 
@@ -337,8 +367,8 @@ class BotHandlers:
                     if wastickers_files:
                         await self.client.send_message(item.chat_id, f"✅ Conversion complete for <b><a href=\"{pack_url}\">{pack_title}</a></b>! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
                         for i, file_path in enumerate(wastickers_files):
-                            caption = f"📦 {os.path.basename(file_path)} - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
-                            await self.client.send_file(item.chat_id, file_path, caption=caption)
+                            caption = f"📦 <a href=\"{pack_url}\">{pack_title}</a> - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
+                            await self.client.send_file(item.chat_id, file_path, caption=caption, link_preview=False, parse_mode='html')
                             os.remove(file_path)
                         success = True
                         status_for_db = "completed"
@@ -675,6 +705,39 @@ class BotHandlers:
         logger.info(f"User {user.id} has fetched their stats.")
         raise StopPropagation
     
+    @check_banned
+    async def premium_command(self, event: events.NewMessage.Event):
+        """Displays the user's premium status and benefits."""
+        user = await event.get_sender()
+        
+        # Base message with premium benefits
+        benefits_message = (
+            f"<b>Premium Benefits Include:</b>\n"
+            f"  • 🚀 <b>Priority Queue:</b> Your requests jump to the front of the line.\n"
+            f"  • ⚙️ <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.\n"
+            f"  • 💬 <b>Priority Support:</b> Get faster help in the support group."
+        )
+
+        if db.is_premium(user.id):
+            duration_left = db.get_premium_duration_left(user.id)
+            days = duration_left.days
+            hours = duration_left.seconds // 3600
+            
+            status_message = (
+                f"⭐ <b>You have an active Premium subscription!</b>\n"
+                f"<i>Expires in: {days} days and {hours} hours.</i>\n\n"
+            )
+            message = status_message + benefits_message
+        else:
+            status_message = (
+                f"❌ <b>You are not currently a Premium user.</b>\n\n"
+                f"Contact an admin at <b>{SUPPORT_GROUP_LINK}</b> to upgrade and unlock these great features!\n\n"
+            )
+            message = status_message + benefits_message
+
+        await event.reply(message, parse_mode='html')
+        raise StopPropagation
+
     # silent ban command
     async def sban_command(self, event: events.NewMessage.Event):
         """Admin command to SILENTLY ban a user."""
@@ -784,6 +847,14 @@ class BotHandlers:
             else:
                 await event.edit("❌ You still need to join the required channels.\n\n" + CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
         
+        elif data.startswith("cancel_"):
+            log_id = int(data.split("_", 1)[1])
+            success = await queue_manager.cancel_item(user.id, log_id)
+            if success:
+                await event.edit("✅ Your request has been successfully cancelled.")
+            else:
+                await event.edit("❌ Could not cancel. The item may be processing or completed.")
+
         elif data == "check_queue":
             position = queue_manager.get_queue_position(user.id)
             stats = queue_manager.get_queue_stats()
@@ -798,7 +869,10 @@ class BotHandlers:
             buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
             if position is None:
                 buttons.append([Button.inline("🏠 Back to Start", b"start")])
-            await event.edit(message, buttons=buttons)
+            try:
+                await event.edit(message, buttons=buttons)
+            except Exception as e:
+                logger.warning(f"Could not edit the check_queue message: {e}")
         
         elif data == "help":
             buttons = [

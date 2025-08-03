@@ -16,6 +16,7 @@ class QueueItem:
     username: str
     chat_id: int
     message_id: int
+    bot_reply_message_id: int
     pack_input: Any  # Can be a string (short_name) or an InputStickerSet object
     log_id: int
     timestamp: datetime
@@ -30,7 +31,7 @@ class QueueManager:
         self._lock = asyncio.Lock()
     
     async def add_to_queue(self, user_id: int, username: str, chat_id: int, 
-                          message_id: int, pack_input: Any, log_id: int,  is_premium: bool) -> int:
+                          message_id: int, bot_reply_message_id: int, pack_input: Any, log_id: int,  is_premium: bool) -> int:
         """Add user to queue and return position"""
         async with self._lock:
             
@@ -39,6 +40,7 @@ class QueueManager:
                 username=username,
                 chat_id=chat_id,
                 message_id=message_id,
+                bot_reply_message_id=bot_reply_message_id,
                 pack_input=pack_input,
                 log_id=log_id,
                 timestamp=datetime.now(),
@@ -67,6 +69,27 @@ class QueueManager:
             # Return the position of the newly added item
             return self.get_queue_position(user_id, specific_item=queue_item)
             
+    async def cancel_item(self, user_id: int, log_id: int) -> bool:
+        """Removes a specific item from the queue by its log_id."""
+        async with self._lock:
+            # Find the item in the main queue
+            item_to_remove = next((item for item in self.queue if item.log_id == log_id and item.user_id == user_id), None)
+
+            if item_to_remove:
+                # Remove from the main queue
+                self.queue.remove(item_to_remove)
+                
+                # Remove from the user-specific queue
+                user_specific_queue = self.user_queues.get(user_id, [])
+                if item_to_remove in user_specific_queue:
+                    user_specific_queue.remove(item_to_remove)
+
+                if not user_specific_queue:
+                    del self.user_queues[user_id]
+                
+                logger.info(f"User {user_id} cancelled item with log_id {log_id}")
+                return True
+        return False
     
     async def get_next_item(self) -> Optional[QueueItem]:
         """Get next item to process"""
