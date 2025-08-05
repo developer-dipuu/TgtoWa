@@ -87,12 +87,12 @@ class BotHandlers:
 
             # First Button in Row
             name1, link1 = REQUIRED_CHANNELS_FORMATTED[i][:2]
-            row.append(Button.url(f"Join {name1}", url=link1))
+            row.append(Button.url(f"{name1}", url=link1))
 
             # Second Button in Row (if it exists)
             if i + 1 < len(REQUIRED_CHANNELS_FORMATTED):
                 name2, link2 = REQUIRED_CHANNELS_FORMATTED[i+1][:2]
-                row.append(Button.url(f"Join {name2}", url=link2))
+                row.append(Button.url(f"{name2}", url=link2))
             
             keyboard.append(row)
         
