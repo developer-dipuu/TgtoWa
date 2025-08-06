@@ -129,7 +129,7 @@ def estimate_wait_time(sticker_documents: list, num_packs: Optional[int]) -> str
     """
     Calculates a detailed estimated wait time based on the type of each sticker/emoji.
     """
-    total_seconds = 0
+    total_seconds = 0.0
 
     # Time for processing each sticker/emoji
     for doc in sticker_documents:
@@ -147,9 +147,4 @@ def estimate_wait_time(sticker_documents: list, num_packs: Optional[int]) -> str
     # if num_packs:
     #     total_seconds += 10*num_packs
     
-    # Round off the time for better UI
-    if total_seconds < 60:
-        return f"{round(total_seconds)} seconds"
-    else:
-        minutes = round(total_seconds / 60)
-        return f"{minutes} minute(s)"
+    return total_seconds
