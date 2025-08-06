@@ -18,6 +18,8 @@ class QueueItem:
     message_id: int
     bot_reply_message_id: int
     pack_input: Any  # Can be a string (short_name) or an InputStickerSet object
+    sticker_set: Any
+    estimated_seconds: float
     log_id: int
     timestamp: datetime
     is_premium: bool
@@ -30,8 +32,8 @@ class QueueManager:
         self.user_queues: Dict[int, List[QueueItem]] = {}  # user_id -> QueueItem
         self._lock = asyncio.Lock()
     
-    async def add_to_queue(self, user_id: int, username: str, chat_id: int, 
-                          message_id: int, bot_reply_message_id: int, pack_input: Any, log_id: int,  is_premium: bool) -> int:
+    async def add_to_queue(self, user_id: int, username: str, chat_id: int, message_id: int, bot_reply_message_id: int, pack_input: Any,
+                           sticker_set: Any, estimated_seconds: float, log_id: int,  is_premium: bool) -> int:
         """Add user to queue and return position"""
         async with self._lock:
             
@@ -42,6 +44,8 @@ class QueueManager:
                 message_id=message_id,
                 bot_reply_message_id=bot_reply_message_id,
                 pack_input=pack_input,
+                sticker_set=sticker_set,
+                estimated_seconds=estimated_seconds,
                 log_id=log_id,
                 timestamp=datetime.now(),
                 is_premium=is_premium

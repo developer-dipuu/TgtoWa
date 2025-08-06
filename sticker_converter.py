@@ -58,9 +58,15 @@ class StickerConverter:
         """
         try:
             file_path = os.path.join(temp_dir, f"sticker_{sticker.id}")
-            downloaded_path = await self.client.download_media(sticker, file=file_path)
+            downloaded_path = await asyncio.wait_for(
+                self.client.download_media(sticker, file=file_path),
+                timeout=DOWNLOAD_TIMEOUT
+            )
             logger.info(f"Successfully downloaded item {sticker.id} to {downloaded_path}")
             return downloaded_path
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout while downloading sticker {sticker.id}.")
+            return None
         except Exception as e:
             logger.error(f"Failed to download item {sticker.id}: {e}")
             return None

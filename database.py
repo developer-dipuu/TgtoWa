@@ -50,7 +50,7 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS conversion_log (
                     log_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
-                    pack_input TEXT NOT NULL,
+                    pack_url TEXT NOT NULL,
                     is_emoji BOOLEAN NOT NULL,
                     status TEXT NOT NULL,
                     request_time TIMESTAMP NOT NULL,
@@ -262,13 +262,13 @@ def get_gstats_banned_list() -> list:
     
     
 # --- Conversion Logging ---
-def log_conversion_request(user_id: int, pack_input: str, is_emoji: bool) -> int:
+def log_conversion_request(user_id: int, pack_url: str, is_emoji: bool) -> int:
     """Logs the start of a conversion request and returns the log ID."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO conversion_log (user_id, pack_input, is_emoji, status, request_time) VALUES (?, ?, ?, ?, ?)",
-            (user_id, pack_input, is_emoji, "processing", datetime.now())
+            "INSERT INTO conversion_log (user_id, pack_url, is_emoji, status, request_time) VALUES (?, ?, ?, ?, ?)",
+            (user_id, pack_url, is_emoji, "processing", datetime.now())
         )
         conn.commit()
         return cursor.lastrowid

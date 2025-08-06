@@ -31,6 +31,12 @@ MAX_ICON_SIZE = 50 * 1024      # 50KB
 STICKER_DIMENSIONS = (512, 512)
 ICON_DIMENSIONS = (96, 96)
 
+
+# Timeouts and processing limits
+DOWNLOAD_TIMEOUT = 30  # seconds to wait for a sticker/emoji file to download
+UPLOAD_TIMEOUT = 60    # seconds to wait for a .wastickers file to upload
+MAX_CONVERSION_SECONDS_REGULAR = 300  # 5 minutes. Max estimated time for non-premium users
+
 # File paths
 TEMP_DIR = "temp"
 OUTPUT_DIR = "output"

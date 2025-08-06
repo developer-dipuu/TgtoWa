@@ -204,8 +204,27 @@ class BotHandlers:
         # Fetch the sticker/emoji set to get its actual name and type
         try:
             sticker_set = await self.converter.get_sticker_set(pack_input)
-            is_emoji_pack = sticker_set.set.emojis
 
+            if not sticker_set or not sticker_set.documents:
+                 logger.error(f"Could not fetch a valid sticker set for input: {pack_input}")
+                 await event.reply("❌ I couldn't find that sticker pack. It might be private, invalid, or empty. Please try another one!")
+                 return
+            # find estimated time
+            estimated_seconds = estimate_wait_time(sticker_set.documents, None)
+            # max conversion duration cap
+            if not is_premium:
+                if estimated_seconds > MAX_CONVERSION_SECONDS_REGULAR:
+                    await event.reply(
+                        (
+                            "😟 **Pack Too Large for Regular Users!**\n\n"
+                            f"This pack is estimated to take more than **{MAX_CONVERSION_SECONDS_REGULAR // 60} minutes** to convert, "
+                            "which exceeds the time limit for regular users.\n\n"
+                            "Upgrade to **Premium** to convert larger packs instantly!\n"
+                        ),
+                        buttons=[[Button.inline("💎 Learn about Premium", b"premium")]]
+                    )
+                    return
+            is_emoji_pack = sticker_set.set.emojis
             if sticker_set and sticker_set.set:
                 pack_display_name = sticker_set.set.title
             else:
@@ -235,6 +254,8 @@ class BotHandlers:
                 message_id=event.message.id,
                 bot_reply_message_id=placeholder_message.id,
                 pack_input=pack_input,
+                sticker_set=sticker_set,
+                estimated_seconds=estimated_seconds,
                 log_id=log_id,
                 is_premium=is_premium
         )
@@ -271,6 +292,98 @@ class BotHandlers:
                 asyncio.create_task(self.process_queue())
 
 
+    async def _run_conversion(self, item):
+        """
+        The core logic for converting a single sticker pack.
+        Raises an Exception on any failure to signal the caller.
+        """
+        try:
+            await self.client.edit_message(
+                entity=item.chat_id,
+                message=item.bot_reply_message_id,
+                text=f"⌛ Your request for the pack is now processing...",
+                buttons=None
+            )
+        except Exception as e:
+            logger.warning(f"Could not edit message {item.bot_reply_message_id} to remove cancel button: {e}")
+
+        status_message = await self.client.send_message(
+            item.chat_id,
+            "🚀 Starting conversion for your pack...\n"
+            "🤔 Estimated time: `Calculating...`"
+        )
+        # sticker info
+        sticker_set = item.sticker_set
+        pack_title = sticker_set.set.title
+        total_stickers = len(sticker_set.documents)
+        num_packs = (total_stickers + MAX_STICKERS_PER_PACK - 1) // MAX_STICKERS_PER_PACK
+        pack_short_name = sticker_set.set.short_name
+        is_emoji_pack = sticker_set.set.emojis
+        estimated_seconds = item.estimated_seconds
+        processing_timeout = max(60, estimated_seconds * 2)
+
+        # Round off the time for better UI
+        if estimated_seconds < 60:
+            estimated_time_str = f"{round(estimated_seconds)} seconds"
+        else:
+            minutes = round(estimated_seconds / 60)
+            estimated_time_str =  f"~{minutes} minute(s)"
+
+        await self.client.edit_message(
+            entity=item.chat_id,
+            message=status_message.id,
+            text=f"🚀 Starting conversion for your pack...\n"
+                f"🤔 Estimated time: {estimated_time_str}"
+        )
+        
+        pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
+        item_name = "emojis" if is_emoji_pack else "stickers"
+        pack_url = f"https://t.me/{pack_type_url}/{pack_short_name}"
+
+        message = (f"📊 <b>Pack Details:</b>\n"
+                f"• Name: <a href=\"{pack_url}\">{pack_title}</a>\n"
+                f"• Total {item_name}: {total_stickers}\n"
+                f"• This will create {num_packs} .wastickers file(s).")
+        await self.client.send_message(item.chat_id, message, parse_mode='html', link_preview=False)
+
+        # Run the conversion with a timeout (either 60 sec or 2x the estimated time)
+        wastickers_files = await asyncio.wait_for(self.converter.create_wastickers_pack(sticker_set, item.username), timeout=processing_timeout)
+
+        if not wastickers_files:
+            await self.client.send_message(item.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{pack_title}</a></b>. If the problem persists, ping us at **{SUPPORT_GROUP}**", link_preview=False, parse_mode='html')
+            # This is a failure, so we raise an exception.
+            raise Exception("Wasticker file creation returned no files.")
+
+        # If we get here, conversion was successful, now we upload.
+        await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
+        
+        upload_success = True
+        for i, file_path in enumerate(wastickers_files):
+            caption = f"📦 <a href=\"{pack_url}\">{pack_title}</a> - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
+            try:
+                await asyncio.wait_for(
+                    self.client.send_file(item.chat_id, file_path, caption=caption, link_preview=False, parse_mode='html'),
+                    timeout=UPLOAD_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"Upload timeout for user {item.user_id}, file {file_path}")
+                if num_packs == 1:
+                    await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
+                else:
+                    await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack part {i+1}. Please try aagain later.")
+                upload_success = False
+            finally:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            
+            if not upload_success:
+                # if a single upload fails, it means the whole job for that user failed
+                raise Exception("Upload failed due to timeout.")
+
+        # If all uploads were successful
+        await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
+
+
     async def process_queue(self):
         """Process the conversion queue."""
         async with self.processing_lock:
@@ -279,98 +392,39 @@ class BotHandlers:
                 if not item:
                     break
 
-                try: # edit the queue message
-                    await self.client.edit_message(
-                        entity=item.chat_id,
-                        message=item.bot_reply_message_id,
-                        text=f"⌛ Your request for the pack is now processing...",
-                        buttons=None
-                    )
-                except Exception as e:
-                    logger.warning(f"Could not edit message {item.bot_reply_message_id} to remove cancel button: {e}")
-
                 start_time = datetime.now()
                 success = False 
                 status_for_db = "failed"
-                try:
-                    status_message = await self.client.send_message(
-                        item.chat_id, 
-                        "🚀 Starting conversion for your pack...\n"
-                        "🤔 Estimated time: `Calculating...`"
-                    )
-                    
-                    sticker_set = await self.converter.get_sticker_set(item.pack_input)
-                    if not sticker_set:
-                        error_pack_name = item.pack_input if isinstance(item.pack_input, str) else "the pack you sent"
-                        await self.client.send_message(item.chat_id, f"❌ Failed to find pack: `{error_pack_name}`. It might be private or invalid.")
-                        # success is still false
-                        continue
+                try:                    
+                    await self._run_conversion(item)
 
-                    pack_title = sticker_set.set.title
-                    total_stickers = len(sticker_set.documents)
-                    num_packs = (total_stickers + MAX_STICKERS_PER_PACK - 1) // MAX_STICKERS_PER_PACK
-                    pack_short_name = sticker_set.set.short_name
-                    is_emoji_pack = sticker_set.set.emojis
+                    # If the above line completes without any exception, it was a success.
+                    success = True
+                    status_for_db = "completed"
 
-                    estimated_time = estimate_wait_time(sticker_set.documents, num_packs)
-
-                    # Edit the original message to show the real estimate
-                    await self.client.edit_message(
-                        entity=item.chat_id,
-                        message=status_message.id,
-                        text=f"🚀 Starting conversion for your pack...\n"
-                            f"🤔 Estimated time: {estimated_time}"
-                    )
-
-
-                    if is_emoji_pack:
-                        pack_type_url = "addemoji"
-                        item_name = "emojis"
-                    else:
-                        pack_type_url = "addstickers"
-                        item_name = "stickers"
-                        
-                    pack_url = f"https://t.me/{pack_type_url}/{pack_short_name}"
-
-                    # Construct the message
-                    message = (f"📊 <b>Pack Details:</b>\n"
-                            f"• Name: <a href=\"{pack_url}\">{pack_title}</a>\n"
-                            f"• Total {item_name}: {total_stickers}\n"
-                            f"• This will create {num_packs} .wastickers file(s).")
-                    
-                    await self.client.send_message(item.chat_id, message, parse_mode='html', link_preview=False)
-                    
-                    wastickers_files = await self.converter.create_wastickers_pack(sticker_set, item.username)
-                    
-                    if wastickers_files:
-                        await self.client.send_message(item.chat_id, f"✅ Conversion complete for <b><a href=\"{pack_url}\">{pack_title}</a></b>! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
-                        for i, file_path in enumerate(wastickers_files):
-                            caption = f"📦 <a href=\"{pack_url}\">{pack_title}</a> - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
-                            await self.client.send_file(item.chat_id, file_path, caption=caption, link_preview=False, parse_mode='html')
-                            os.remove(file_path)
-                        success = True
-                        status_for_db = "completed"
-                        
-                        await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
-                        success = True
-                    else:
-                        await self.client.send_message(item.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{pack_title}</a></b>. There might have been an issue with the sticker files themselves.", link_preview=False, parse_mode='html')
-                        # success is still false
-
-                except Exception as e:
-                    logger.error(f"Error processing queue item for user {item.user_id}: {e}", exc_info=True)
+                except asyncio.TimeoutError:
+                    status_for_db = "failed_timeout"
+                    logger.error(f"Processing timed out for user {item.user_id}.")
                     try:
-                        await self.client.send_message(item.chat_id, "❌ An unexpected error occurred during conversion. The developers have been notified. Please try again later.")
-                    except: pass
-                    # success is still false
+                        await self.client.send_message(
+                            item.chat_id,
+                            (f"⏱️ The conversion for your pack took longer than expected and has timed out.❌\n"
+                            f"Please try again later or with a different pack.\n\n"
+                            f"If the problem persists, ping us at **{SUPPORT_GROUP}**")
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not send timeout message to {item.user_id}: {e}")
+
+                except Exception as e: # other generic exceptions
+                    status_for_db = "failed_exception"
+                    logger.error(f"An exception occurred while processing queue item for user {item.user_id}: {e}")
 
                 finally:
                     # Update the database log
                     completion_time = datetime.now()
                     duration = (completion_time - start_time).total_seconds()
                     db.update_conversion_log(item.log_id, status_for_db, completion_time, duration)
-
-                    await queue_manager.complete_processing(item.user_id, success)                
+                    await queue_manager.complete_processing(item.user_id, success)               
 
     # Admin commands starts here
     async def _get_user_from_event(self, event: events.NewMessage.Event, arg: Optional[str]) -> Optional[Message.sender]:
