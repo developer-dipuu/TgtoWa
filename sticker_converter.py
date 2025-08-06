@@ -70,7 +70,19 @@ class StickerConverter:
         except Exception as e:
             logger.error(f"Failed to download item {sticker.id}: {e}")
             return None
-
+    def _process_static_image(self,input_path, output_path):
+        """Helper function to run PIL operations in a separate thread."""
+        with Image.open(input_path) as img:
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            img.thumbnail(STICKER_DIMENSIONS, Image.Resampling.LANCZOS)
+            new_img = Image.new('RGBA', STICKER_DIMENSIONS, (0, 0, 0, 0))
+            x = (STICKER_DIMENSIONS[0] - img.width) // 2
+            y = (STICKER_DIMENSIONS[1] - img.height) // 2
+            new_img.paste(img, (x, y), img)
+            new_img.save(output_path, 'WEBP', quality=WEBP_QUALITY)
+        return True
+    
     async def convert_to_webp(self, input_path: str, output_path: str) -> bool:
         """Convert various sticker/emoji formats to WebP."""
         try:
@@ -81,16 +93,7 @@ class StickerConverter:
             elif file_ext in ['.webm', '.mp4', '.gif', '.mov', '.mkv']:
                 return await asyncio.to_thread(convert_video_to_webp, input_path, output_path, width= 512, height= 512, quality=WEBP_QUALITY)
             else: # Static image
-                with Image.open(input_path) as img:
-                    if img.mode != 'RGBA':
-                        img = img.convert('RGBA')
-                    img.thumbnail(STICKER_DIMENSIONS, Image.Resampling.LANCZOS)
-                    new_img = Image.new('RGBA', STICKER_DIMENSIONS, (0, 0, 0, 0))
-                    x = (STICKER_DIMENSIONS[0] - img.width) // 2
-                    y = (STICKER_DIMENSIONS[1] - img.height) // 2
-                    new_img.paste(img, (x, y), img)
-                    new_img.save(output_path, 'WEBP', quality=WEBP_QUALITY)
-                return True
+                 return await asyncio.to_thread(self._process_static_image, input_path, output_path)
         except Exception as e:
             logger.error(f"Failed to convert {input_path} to WebP: {e}")
             return False

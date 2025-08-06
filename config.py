@@ -36,13 +36,16 @@ ICON_DIMENSIONS = (96, 96)
 DOWNLOAD_TIMEOUT = 30  # seconds to wait for a sticker/emoji file to download
 UPLOAD_TIMEOUT = 60    # seconds to wait for a .wastickers file to upload
 MAX_CONVERSION_SECONDS_REGULAR = 300  # 5 minutes. Max estimated time for non-premium users
+DB_UPLOAD_TIMEOUT = 20
 
-# File paths
+# File paths 
 TEMP_DIR = "temp"
 OUTPUT_DIR = "output"
+LOG_DIR = "~/screenlogs" # if you have setup the logging system like screen's logging and use logrotate to manage logs (for /getlogs command)
+DB_PATH = "bot_data.db" # its by default in the same working directory but if you messup with the code and chnage it, change it here too for the /getdb command to work
 
+# formatting properly for use
 SUPPORT_GROUP_LINK = SUPPORT_GROUP if SUPPORT_GROUP.startswith(('https://t.me/', 'http://t.me/', 'https://telegram.me/', 'http://telegram.me/', 't.me/')) else f"https://t.me/{SUPPORT_GROUP.lstrip("@")}"
-
 REQUIRED_CHANNELS_FORMATTED = [
     (name, link, *rest) if link.startswith(('https://t.me/', 'http://t.me/', 'https://telegram.me/', 'http://telegram.me/', 't.me/')) else (name, f"https://t.me/{link.lstrip("@")}", *rest) for (name, link, *rest) in REQUIRED_CHANNELS
 ]

@@ -2,7 +2,9 @@
 Telegram bot handlers for the TG Sticker/Emoji to WA Sticker Converter Bot (Telethon Version)
 """
 
-import os
+import os 
+import glob
+import zipfile
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -62,6 +64,8 @@ class BotHandlers:
         self.client.add_event_handler(self.demote_command, events.NewMessage(pattern=r'/demote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.broadcast_command, events.NewMessage(pattern=r'/broadcast', func=lambda e: db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.gstats_command, events.NewMessage(pattern=r'/gstats', func=lambda e: db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.getdb_command, events.NewMessage(pattern='/getdb', func=lambda e: db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.getlogs_command, events.NewMessage(pattern='/getlogs', func=lambda e: db.is_owner(e.sender_id)))
         # Premium commands (admin use)
         self.client.add_event_handler(self.add_premium_command, events.NewMessage(pattern=r'/addpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.remove_premium_command, events.NewMessage(pattern=r'/removepremium(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
@@ -292,6 +296,39 @@ class BotHandlers:
                 asyncio.create_task(self.process_queue())
 
 
+    async def _notify_owner_of_failure(self, item, error_type: str, error_message: str):
+        """Sends a detailed failure notification to the bot owner."""
+        try:
+            user_display_name = item.username
+            user_id = item.user_id
+            log_id = item.log_id
+            
+            # Reconstruct the pack URL for easy checking
+            pack_url = "N/A"
+            if item.sticker_set and item.sticker_set.set:
+                is_emoji = item.sticker_set.set.emojis
+                pack_type = "addemoji" if is_emoji else "addstickers"
+                pack_url = f"https://t.me/{pack_type}/{item.sticker_set.set.short_name}"
+
+            message = (
+                f"🚨 **Conversion Failure Notification** 🚨\n\n"
+                f"A conversion has failed. Here are the details:\n\n"
+                f"👤 **User:** {user_display_name} (`{user_id}`)\n"
+                f"📦 **Pack URL:** {pack_url}\n"
+                f"📄 **Log ID:** `{log_id}`\n"
+                f"🛑 **Error Type:** `{error_type}`\n"
+                f"🗒️ **Error Details:**\n"
+                f"```\n{error_message}\n```\n\n"
+                f"The failure has been logged to the database."
+            )
+
+            await self.client.send_message(OWNER_ID, message, link_preview=False)
+            logger.info(f"Sent failure notification to owner for log_id {log_id}")
+
+        except Exception as e:
+            logger.error(f"CRITICAL: Failed to send failure notification to owner for log_id {log_id}: {e}")
+
+
     async def _run_conversion(self, item):
         """
         The core logic for converting a single sticker pack.
@@ -347,7 +384,20 @@ class BotHandlers:
         await self.client.send_message(item.chat_id, message, parse_mode='html', link_preview=False)
 
         # Run the conversion with a timeout (either 60 sec or 2x the estimated time)
-        wastickers_files = await asyncio.wait_for(self.converter.create_wastickers_pack(sticker_set, item.username), timeout=processing_timeout)
+        try:
+            wastickers_files = await asyncio.wait_for(self.converter.create_wastickers_pack(sticker_set, item.username), timeout=processing_timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"Conversion timed out while creating .wasticker files.")
+            try:
+                await self.client.send_message(
+                    item.chat_id,
+                    (f"⏱️ The conversion for your pack took longer than expected and has timed out.❌\n"
+                    f"Please try again later or with a different pack.\n\n"
+                    f"If the problem persists, ping us at **{SUPPORT_GROUP}**")
+                )
+            except Exception as e:
+                logger.warning(f"Could not send timeout message to {item.user_id}: {e}")
+            raise asyncio.TimeoutError("Time out while creating .wasticker files.")
 
         if not wastickers_files:
             await self.client.send_message(item.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{pack_title}</a></b>. If the problem persists, ping us at **{SUPPORT_GROUP}**", link_preview=False, parse_mode='html')
@@ -357,7 +407,6 @@ class BotHandlers:
         # If we get here, conversion was successful, now we upload.
         await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
         
-        upload_success = True
         for i, file_path in enumerate(wastickers_files):
             caption = f"📦 <a href=\"{pack_url}\">{pack_title}</a> - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
             try:
@@ -371,14 +420,12 @@ class BotHandlers:
                     await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
                 else:
                     await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack part {i+1}. Please try aagain later.")
-                upload_success = False
+                raise asyncio.TimeoutError("Time out while uploading the pack.")
             finally:
                 if os.path.exists(file_path):
                     os.remove(file_path)
             
-            if not upload_success:
-                # if a single upload fails, it means the whole job for that user failed
-                raise Exception("Upload failed due to timeout.")
+
 
         # If all uploads were successful
         await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
@@ -402,22 +449,15 @@ class BotHandlers:
                     success = True
                     status_for_db = "completed"
 
-                except asyncio.TimeoutError:
+                except asyncio.TimeoutError as e:
                     status_for_db = "failed_timeout"
-                    logger.error(f"Processing timed out for user {item.user_id}.")
-                    try:
-                        await self.client.send_message(
-                            item.chat_id,
-                            (f"⏱️ The conversion for your pack took longer than expected and has timed out.❌\n"
-                            f"Please try again later or with a different pack.\n\n"
-                            f"If the problem persists, ping us at **{SUPPORT_GROUP}**")
-                        )
-                    except Exception as e:
-                        logger.warning(f"Could not send timeout message to {item.user_id}: {e}")
+                    logger.error(f"Processing timed out for user {item.user_id}. ERROR: {e}")
+                    await self._notify_owner_of_failure(item, "TimeoutError", str(e))
 
                 except Exception as e: # other generic exceptions
                     status_for_db = "failed_exception"
                     logger.error(f"An exception occurred while processing queue item for user {item.user_id}: {e}")
+                    await self._notify_owner_of_failure(item, type(e).__name__, str(e))
 
                 finally:
                     # Update the database log
@@ -771,6 +811,97 @@ class BotHandlers:
 
         raise StopPropagation
 
+
+    async def getdb_command(self, event: events.NewMessage.Event):
+        """Owner command to get the database file."""    
+        db_path = os.path.realpath(os.path.expanduser(DB_PATH))    
+
+        if os.path.exists(db_path):
+            logger.info(f"Owner {event.sender_id} requested the database file.")
+            try:
+                await asyncio.wait_for(event.reply("📦 Here is the database file.", file=db_path), DB_UPLOAD_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error(f"Database file upload timed out.")
+                await event.reply("❌ Error: Database file upload timed out.")
+        else:
+            logger.error(f"Owner {event.sender_id} requested DB, but it was not found at {db_path}.")
+            await event.reply("❌ Error: `bot_data.db` not found in the specified directory.")
+        raise StopPropagation
+
+
+    async def getlogs_command(self, event: events.NewMessage.Event):
+        """Owner command to get the screen log files."""        
+        log_dir = os.path.realpath(os.path.expanduser(LOG_DIR))
+        args = event.text.split()
+
+        # Determine if 'all' argument is present
+        get_all = len(args) > 1 and args[1].lower() == 'all'
+        
+        if not os.path.exists(log_dir):
+            logger.error(f"Owner {event.sender_id} requested logs, but log directory '{log_dir}' not found.")
+            await event.reply("❌ Error: Log directory not found.")
+            return
+
+        if get_all: # Send all logs as a zip 
+            try:
+                logger.info(f"Owner {event.sender_id} requested all log files.")
+                all_logs = glob.glob(os.path.join(log_dir, '*'))
+                if not all_logs:
+                    await event.reply("🤔 The log directory is empty.")
+                    return
+
+                zip_path = os.path.join(TEMP_DIR, "bot_logs.zip")
+                
+                await event.reply(f"📦 Zipping up {len(all_logs)} log files. Please wait...")
+
+                # Create a zip file in a separate thread to avoid blocking
+                def create_zip():
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for log_file in all_logs:
+                            zf.write(log_file, os.path.basename(log_file))
+
+                try:# wait for zipping to complete upto 60 sec
+                    await asyncio.wait_for(asyncio.to_thread(create_zip), 60)
+                except asyncio.TimeoutError:
+                    logger.error(f"Stopped creating zip because it was taking too much time.")
+                    await event.reply(f"Creating zip failed, it is taking too much time. Maybe log files are too big or something unexpected is there in the logs directory.")
+                    return
+                
+                try:# wait for upload to complete for upto UPLOAD_TIMEOUT seconds
+                    await asyncio.wait_for(self.client.send_file(event.chat_id, zip_path, caption=f"Here are all {len(all_logs)} log files."), UPLOAD_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.error(f"Logs file upload timed out.")
+                    await event.reply("Error: Logs file upload timed out.")
+                    return
+            except Exception as e:
+                logger.error(f"An error occured: {e}")
+            finally:
+                if os.path.exists(zip_path):
+                    os.remove(zip_path) # Clean up the zip file
+
+        else: # Send the latest (current) log
+            logger.info(f"Owner {event.sender_id} requested the latest log file.")
+            # Find the uncompressed .log file (logrotate leaves today's log uncompressed)
+            # Your .screenrc names it based on session and window, e.g., tgBot-0.log
+            try:
+                latest_logs = glob.glob(os.path.join(log_dir, '*.log'))
+                
+                if latest_logs:
+                    # Assuming the first one found is the active one
+                    latest_log_path = latest_logs[0]
+                    try:
+                        await asyncio.wait_for(event.reply("📄 Here is the current log file.", file=latest_log_path), UPLOAD_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.error(f"Logs file upload timed out.")
+                        await event.reply("Error: Logs file upload timed out.")
+                        return
+                else:
+                    logger.error(f"Warning: No .log files found in {log_dir}")
+                    await event.reply("🤔 No `.log` file found. Seems something's wrong.")
+            except Exception as e:
+                logger.error(f"An error occured while getting logs: {e}")
+        raise StopPropagation
+    
     # Admins commands
     async def add_premium_command(self, event: events.NewMessage.Event):
         """Admin command to add a premium user."""
