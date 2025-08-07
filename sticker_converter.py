@@ -54,22 +54,37 @@ class StickerConverter:
     
     async def download_sticker(self, sticker: Document, temp_dir: str) -> Optional[str]:
         """
-        Download a single sticker or emoji file using Telethon's download_media.
+        Download a single sticker or emoji file with a retry mechanism.
         """
-        try:
-            file_path = os.path.join(temp_dir, f"sticker_{sticker.id}")
-            downloaded_path = await asyncio.wait_for(
-                self.client.download_media(sticker, file=file_path),
-                timeout=DOWNLOAD_TIMEOUT
-            )
-            logger.info(f"Successfully downloaded item {sticker.id} to {downloaded_path}")
-            return downloaded_path
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout while downloading sticker {sticker.id}.")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to download item {sticker.id}: {e}")
-            return None
+        file_path = os.path.join(temp_dir, f"sticker_{sticker.id}")
+        max_retries = MAX_DOWNLOAD_RETRIES
+        
+        for attempt in range(max_retries):
+            try:
+                downloaded_path = await asyncio.wait_for(
+                    self.client.download_media(sticker, file=file_path),
+                    timeout=DOWNLOAD_TIMEOUT
+                )
+                if downloaded_path:
+                    logger.info(f"Successfully downloaded item {sticker.id} to {downloaded_path} on attempt {attempt + 1}")
+                    return downloaded_path
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout on attempt {attempt + 1}/{max_retries} while downloading sticker {sticker.id}.")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 * (attempt + 1))  # Wait 2, 4 seconds before retrying
+                else:
+                    logger.error(f"Failed to download sticker {sticker.id} after {max_retries} attempts due to timeout.")
+                    return None
+            except Exception as e:
+                logger.error(f"Failed to download item {sticker.id} on attempt {attempt + 1} with error: {e}")
+                if attempt < max_retries - 1:
+                     await asyncio.sleep(1) # 1 sec wait for other error 
+                else:
+                    logger.error(f"All {max_retries} retries failed for sticker {sticker.id}.")
+                    return None
+        return None
+        
+
     def _process_static_image(self,input_path, output_path):
         """Helper function to run PIL operations in a separate thread."""
         with Image.open(input_path) as img:

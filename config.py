@@ -36,7 +36,8 @@ ICON_DIMENSIONS = (96, 96)
 DOWNLOAD_TIMEOUT = 30  # seconds to wait for a sticker/emoji file to download
 UPLOAD_TIMEOUT = 60    # seconds to wait for a .wastickers file to upload
 MAX_CONVERSION_SECONDS_REGULAR = 300  # 5 minutes. Max estimated time for non-premium users
-DB_UPLOAD_TIMEOUT = 20
+DB_UPLOAD_TIMEOUT = 30
+MAX_DOWNLOAD_RETRIES = 3
 
 # File paths 
 TEMP_DIR = "temp"
