@@ -131,6 +131,52 @@ def init_db():
                 )
             """)
 
+            # For the user's initial contact message
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS contact_messages (
+                    contact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    user_message_id INTEGER NOT NULL,
+                    user_message_text TEXT, -- Storing the actual message content
+                    timestamp_sent TIMESTAMP NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending', -- 'pending' or 'replied'
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            """)
+
+            # For logging all admin replies
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS admin_replies (
+                    reply_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    contact_id INTEGER NOT NULL,
+                    admin_id INTEGER NOT NULL,
+                    admin_reply_message_id INTEGER NOT NULL,
+                    admin_reply_text TEXT, -- Storing the actual reply content
+                    timestamp_replied TIMESTAMP NOT NULL,
+                    FOREIGN KEY (contact_id) REFERENCES contact_messages (contact_id),
+                    FOREIGN KEY (admin_id) REFERENCES admins (user_id)
+                )
+            """)
+
+            # For logging all broadcast messages
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS broadcast_log (
+                    broadcast_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER NOT NULL,
+                    timestamp TIMESTAMP NOT NULL,
+                    message_content TEXT,
+                    flags TEXT,
+                    total_users INTEGER,
+                    success_count INTEGER,
+                    fail_count INTEGER,
+                    is_forward BOOLEAN DEFAULT FALSE,
+                    forwarded_from_id INTEGER,
+                    forwarded_message_id INTEGER,
+                    FOREIGN KEY (admin_id) REFERENCES users (user_id)
+                )
+            """)
+
+
             conn.commit()
             logger.info("Database initialized successfully.")
     except sqlite3.Error as e:
@@ -141,7 +187,7 @@ def init_db():
 # --- User Logging ---
 def add_or_update_user(user_id: int, username: Optional[str], full_name: str):
     """Adds a new user or updates their details if they already exist."""
-    safe_full_name = full_name[:50]
+    safe_full_name = full_name[:129]
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
@@ -188,6 +234,18 @@ def get_all_user_ids() -> list[int]:
         cursor.execute("SELECT user_id FROM users")
         # fetchall returns a list of tuples like [(123,), (456,)]
         return [row['user_id'] for row in cursor.fetchall()]
+    
+# fetch all admins including owner from the database
+def get_all_admin_ids() -> List[int]:
+    """Retrieves all admin and owner IDs from the database."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM admins")
+        admin_ids = [row['user_id'] for row in cursor.fetchall()]
+        # Ensure owner is always included and the list is unique
+        if OWNER_ID not in admin_ids:
+            admin_ids.append(OWNER_ID)
+        return admin_ids
 
 def get_gstats() -> dict:
     """Gathers all global statistics for the /gstats command."""
@@ -473,4 +531,99 @@ def unban_user(user_id: int, admin_id: int, reason: Optional[str]) -> bool:
             conn.commit()
             return True
         return False
+
+# --- Contact Logging ----
+
+def log_contact_message(user_id: int, user_message_id: int, message_text: str) -> int:
+    """Logs a new contact message from a user into the contact_messages table and returns contact_id"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO contact_messages (user_id, user_message_id, user_message_text, timestamp_sent) VALUES (?, ?, ?, ?)",
+            (user_id, user_message_id, message_text, datetime.now())
+        )
+        conn.commit()
+        logger.info(f"Logged new contact message from user {user_id}. contact_id: {cursor.lastrowid}")
+        return cursor.lastrowid
+
+def log_admin_reply(contact_id: int, admin_id: int, admin_reply_message_id: int, reply_text: str):
+    """Logs an admin's reply and updates the original message status."""
+    with get_db_connection() as conn:
+        # Add the new reply to the replies table
+        conn.execute(
+            "INSERT INTO admin_replies (contact_id, admin_id, admin_reply_message_id, admin_reply_text, timestamp_replied) VALUES (?, ?, ?, ?, ?)",
+            (contact_id, admin_id, admin_reply_message_id, reply_text, datetime.now())
+        )
+        # Mark the original message as 'replied'
+        conn.execute(
+            "UPDATE contact_messages SET status = 'replied' WHERE contact_id = ?",
+            (contact_id,)
+        )
+        conn.commit()
+        logger.info(f"Logged admin reply for contact_id {contact_id} by admin {admin_id}")
+
+def get_previous_replies(contact_id: int) -> List[sqlite3.Row]:
+    """Checks for and returns any previous replies for a given contact_id."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM admin_replies WHERE contact_id = ? ORDER BY timestamp_replied ASC", (contact_id,))
+        return cursor.fetchall()
+
+def get_contact_details(contact_id: int) -> Optional[dict]:
+    """
+    Fetches full details for a contact ticket, including the user's info,
+    the original message, and all admin replies with admin info.
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Get the original message and join with user_stats to get the user's name
+        query = """
+            SELECT cm.*, us.full_name as user_full_name
+            FROM contact_messages cm
+            LEFT JOIN user_stats us ON cm.user_id = us.user_id
+            WHERE cm.contact_id = ?
+        """
+        cursor.execute(query, (contact_id,))
+        contact_message = cursor.fetchone()
+
+        if not contact_message:
+            return None
+
+        # Get all admin replies and join with user_stats to get admin names
+        query = """
+            SELECT ar.*, us.full_name as admin_full_name
+            FROM admin_replies ar
+            LEFT JOIN user_stats us ON ar.admin_id = us.user_id
+            WHERE ar.contact_id = ?
+            ORDER BY ar.timestamp_replied ASC
+        """
+        cursor.execute(query, (contact_id,))
+        replies = cursor.fetchall()
+
+        return {"user_message": contact_message, "admin_replies": replies}
+
+# ---- Broadcast Logging-----------------
+
+def log_broadcast(admin_id: int, message_content: str, flags: str,
+                  total_users: int, success_count: int, fail_count: int,
+                  is_forward: bool = False, forwarded_from_id: Optional[int] = None,
+                  forwarded_message_id: Optional[int] = None):
+    """Logs a broadcast event to the database."""
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO broadcast_log (
+                admin_id, timestamp, message_content, flags, total_users,
+                success_count, fail_count, is_forward, forwarded_from_id,
+                forwarded_message_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (admin_id, datetime.now(), message_content, flags, total_users,
+             success_count, fail_count, is_forward, forwarded_from_id,
+             forwarded_message_id)
+        )
+        conn.commit()
+        logger.info(f"Logged broadcast from admin {admin_id}. Success: {success_count}, Fail: {fail_count}")
 

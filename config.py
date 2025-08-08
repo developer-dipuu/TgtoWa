@@ -142,7 +142,36 @@ COMMANDS_MESSAGE = """
 • /queue - 📊 Checks your current position in the conversion queue.
 • /mystats - 📈 Shows your usage statistics and current role.
 • /premium - ⭐ Displays your premium status and its benefits.
+• /contact - 📨 Send a message to the bot administrators.
 
 Just send any of these commands to get started!
 """
 
+CONTACT_PROMPT_MESSAGE = """
+⚠️ <b>Contact an Admin</b>
+
+This will forward your next message to the entire admin team. Please be patient for a response.
+
+<b>Please Note:</b>
+- This feature is for genuine queries and feedback only.
+- Abusing this feature for spam may result in a ban.
+
+Click "✉️ Send Message" to proceed or "❌ Cancel" to go back.
+"""
+
+CONTACT_SUCCESS_MESSAGE = "✅ <b>Message Sent!</b>\n\nYour message has been forwarded to the admin team. If a reply is needed, they will contact you directly through me."
+
+CONTACT_ADMIN_REPLY_HEADER = "📨 <b>A reply from the admin team 👇</b>"
+
+CONTACT_ADMIN_NOTIFICATION_HEADER = """
+📩 <b>New User Message</b>
+
+📄 <b>Contact ID:</b> <code>{contact_id}</code>
+👤 <b>From:</b> {user_display_name}
+- <b>User ID:</b> <code>{user_id}</code>
+- <b>Status:</b> {role}
+- <b>Stats:</b>
+✅ Succeeded: <code>{succeeded}</code>
+❌ Failed: <code>{failed}</code>
+📍 Total: <code>{total}</code>
+"""
