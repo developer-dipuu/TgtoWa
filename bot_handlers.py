@@ -1,5 +1,5 @@
 """
-Telegram bot handlers for the TG Sticker/Emoji to WA Sticker Converter Bot (Telethon Version)
+Telegram bot handlers for the TG Sticker/Emoji to WA Sticker Converter Bot
 """
 
 import os 
@@ -90,7 +90,7 @@ class BotHandlers:
 
     
     def _create_channel_join_buttons(self) -> list:
-        """Dynamically creates buttons for both public and private channels."""
+        """Dynamically creates buttons for channels and groups."""
         keyboard = []
         # iterate through the list of tuples from config.py
         for i in range(0, len(REQUIRED_CHANNELS_FORMATTED), 2):
@@ -390,7 +390,7 @@ class BotHandlers:
                 f"• This will create {num_packs} .wastickers file(s).")
         await self.client.send_message(item.chat_id, message, parse_mode='html', link_preview=False)
 
-        # Run the conversion with a timeout (either 60 sec or 2x the estimated time)
+        # run the conversion with a timeout (either 60 sec or 2x the estimated time)
         try:
             wastickers_files = await asyncio.wait_for(self.converter.create_wastickers_pack(sticker_set, item.username), timeout=processing_timeout)
         except asyncio.TimeoutError:
@@ -408,10 +408,10 @@ class BotHandlers:
 
         if not wastickers_files:
             await self.client.send_message(item.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{pack_title}</a></b>. If the problem persists, ping us at **{SUPPORT_GROUP}**", link_preview=False, parse_mode='html')
-            # This is a failure, so we raise an exception.
+            # This is a failure so we raise an exception.
             raise Exception("Wasticker file creation returned no files.")
 
-        # If we get here, conversion was successful, now we upload.
+        # If we get here conversion was successful now we upload.
         await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
         
         for i, file_path in enumerate(wastickers_files):
@@ -452,7 +452,7 @@ class BotHandlers:
                 try:                    
                     await self._run_conversion(item)
 
-                    # If the above line completes without any exception, it was a success.
+                    # If the above line completes without any exception, it was a success
                     success = True
                     status_for_db = "completed"
 
@@ -461,7 +461,7 @@ class BotHandlers:
                     logger.error(f"Processing timed out for user {item.user_id}. ERROR: {e}")
                     await self._notify_owner_of_failure(item, "TimeoutError", str(e))
 
-                except Exception as e: # other generic exceptions
+                except Exception as e: # other exceptions
                     status_for_db = "failed_exception"
                     logger.error(f"An exception occurred while processing queue item for user {item.user_id}: {e}")
                     await self._notify_owner_of_failure(item, type(e).__name__, str(e))
@@ -499,10 +499,6 @@ class BotHandlers:
         # Log user on /start
         full_name = f"{user.first_name} {user.last_name or ''}".strip()
         db.add_or_update_user(user.id, user.username, full_name)
-
-        # if not await self.check_user_membership(user.id):
-        #     await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
-        #     return
         
         buttons = [
             [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
@@ -1485,7 +1481,10 @@ class BotHandlers:
                 ]
                 await event.edit("✅ Great! You're now a member.\n\n" + self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
             else:
-                await event.edit("❌ You still need to join the required channels.\n\n" + CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
+                try:
+                    await event.edit("❌ You still need to join the required channels.\n\n" + CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
+                except Exception as e:
+                    logger.warning(f"Could not edit the Join message: {e}")
         
         elif data.startswith("cancel_"):
             log_id = int(data.split("_", 1)[1])
