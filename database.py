@@ -2,6 +2,7 @@
 import sqlite3
 import logging
 import os
+import json
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 
@@ -178,6 +179,25 @@ def init_db():
                 )
             """)
 
+            # For logging all /send messages
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS send_log (
+                    send_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER NOT NULL,
+                    timestamp TIMESTAMP NOT NULL,
+                    message_content TEXT,
+                    flags TEXT,
+                    target_users_list TEXT,
+                    total_users INTEGER,
+                    success_count INTEGER,
+                    fail_count INTEGER,
+                    is_forward BOOLEAN DEFAULT FALSE,
+                    forwarded_from_id INTEGER,
+                    forwarded_message_id INTEGER,
+                    FOREIGN KEY (admin_id) REFERENCES users (user_id)
+                )
+            """)
+
 
             conn.commit()
             logger.info("Database initialized successfully.")
@@ -274,7 +294,7 @@ def get_gstats() -> dict:
         cursor.execute("SELECT status, COUNT(*) FROM conversion_log WHERE request_time >= ? GROUP BY status", (today_start,))
         today_stats_raw = cursor.fetchall()
         today_succeeded = sum(row[1] for row in today_stats_raw if row[0] == 'completed')
-        today_failed = sum(row[1] for row in today_stats_raw if row[0] == 'failed')
+        today_failed = sum(row[1] for row in today_stats_raw if row[0].startswith('failed'))
         
         return {
             "total_users": total_users,
@@ -492,7 +512,53 @@ def manage_premium_duration(user_id: int, days: int, admin_id: int, action: str)
         conn.commit()
 
         return new_expiry
-    
+
+def remove_expired_premium_users() -> int:
+    """
+    Finds and removes premium users whose subscriptions have expired.
+    Logs the removal to the premium_history table as an 'expired' action.
+    Returns the number of users removed.
+    """
+    now = datetime.now()
+    system_admin_id = 0 # Using 0 as a special ID for automated system actions
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # First, find all users whose subscriptions have expired to log them
+        cursor.execute(
+            "SELECT user_id, expiry_date FROM premium_users WHERE expiry_date <= ?",
+            (now,)
+        )
+        expired_users = cursor.fetchall()
+
+        if not expired_users:
+            return 0 # No one to remove
+
+        # Log that these users expired before we delete them
+        history_logs = []
+        for user in expired_users:
+            # We log the action as 'expired' by the SYSTEM (admin_id=0)
+            history_logs.append(
+                (system_admin_id, user['user_id'], 'expired', None, user['expiry_date'], None, now)
+            )
+        
+        cursor.executemany(
+            """
+            INSERT INTO premium_history 
+            (admin_id, target_user_id, action, duration_change_days, previous_expiry_date, new_expiry_date, timestamp) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            history_logs
+        )
+
+        # Now delete the expired users from the main premium table
+        cursor.execute("DELETE FROM premium_users WHERE expiry_date <= ?", (now,))
+        
+        removed_count = cursor.rowcount
+        conn.commit()
+        
+        return removed_count
 
 ########## Ban Management ###########
 
@@ -606,7 +672,7 @@ def get_contact_details(contact_id: int) -> Optional[dict]:
 
         return {"user_message": contact_message, "admin_replies": replies}
 
-############ Broadcast Logging #####################
+############ Broadcast/send Logging #####################
 
 def log_broadcast(admin_id: int, message_content: str, flags: str,
                   total_users: int, success_count: int, fail_count: int,
@@ -630,3 +696,25 @@ def log_broadcast(admin_id: int, message_content: str, flags: str,
         conn.commit()
         logger.info(f"Logged broadcast from admin {admin_id}. Success: {success_count}, Fail: {fail_count}")
 
+
+def log_send(admin_id: int, message_content: str, flags: str,
+             target_users_list: List[int], success_count: int, fail_count: int,
+             is_forward: bool = False, forwarded_from_id: Optional[int] = None,
+             forwarded_message_id: Optional[int] = None):
+    """Logs a /send event to the database."""
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO send_log (
+                admin_id, timestamp, message_content, flags, target_users_list,
+                total_users, success_count, fail_count, is_forward, forwarded_from_id,
+                forwarded_message_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (admin_id, datetime.now(), message_content, flags, json.dumps(target_users_list),
+             len(target_users_list), success_count, fail_count, is_forward, forwarded_from_id,
+             forwarded_message_id)
+        )
+        conn.commit()
+        logger.info(f"Logged /send from admin {admin_id}. Success: {success_count}, Fail: {fail_count}")
