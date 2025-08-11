@@ -161,7 +161,7 @@ class TGSToWebPConverter:
         try:
             # This returns a PIL Image object
             pil_image = lottie_animation.render_pillow_frame(frame_num=frame_num)
-            # Resize if needed
+            # ========= Resize if needed ============== 
 
             orig_w, orig_h = pil_image.size
             target_w = self.width if self.width != -1 else orig_w
@@ -276,8 +276,9 @@ class TGSToWebPConverter:
         if not os.path.exists(tgs_path):
             raise FileNotFoundError(f"TGS file not found: {tgs_path}")
 
+        # ========= Step 1: Parse and Render Original Frames & coleect metadata and all ==========
+
         try:
-        # --- Step 1: Parse and Render Original Frames ---
             lottie_animation = rlottie.LottieAnimation.from_tgs(tgs_path)
         except Exception as e:
                 print("⚠️ from_tgs() failed; args:", e.args)
@@ -345,7 +346,7 @@ class TGSToWebPConverter:
                 return buffer.getbuffer().nbytes
             return float('inf')
         
-        # --- Step 1: start searching for best size ---
+        # ======= Step 2: start searching for best size ========
 
         print(f"📢 Tgs file found, aiming for a file size under {SIZE_CAP_KB}KB.")
 
@@ -410,7 +411,7 @@ class TGSToWebPConverter:
                             print(f"->⚠️ Extreme compression: 1 frame, Q=1, size {current_size / 1024:.1f}KB.")
 
 
-        # --- Step 3: Final Save ---
+        # ========== Step 3: Final Save ==========
         try:
             if successful_buffer:
                 print(f"\nWriting final WebP to '{webp_path}'...")
@@ -464,7 +465,7 @@ def convert_tgs_to_webp(tgs_path: str, webp_path: str,
 
 
 if __name__ == "__main__":
-    # Example usage
+    # if this file is run directly
     import sys, argparse
     
     
@@ -478,7 +479,7 @@ if __name__ == "__main__":
     parser.add_argument("input_file", help="Path to the input TGS file.")
     parser.add_argument("output_file", help="Path for the output WebP file.")
 
-    # Optional arguments with default values from your function
+    # Optional arguments with default values
     parser.add_argument("--width", type=int, default=-1, help="Output width in pixels. Default: Original.")
     parser.add_argument("--height", type=int, default=-1, help="Output height in pixels. Default: Original.")
     parser.add_argument("--quality", type=int, default=80, help="WebP quality (0-100). Default: 80.")

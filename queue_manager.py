@@ -51,14 +51,14 @@ class QueueManager:
                 is_premium=is_premium
             )
 
-            # Add to the user-specific tracking list
+            # Add to the user specific tracking list
             if user_id not in self.user_queues:
                 self.user_queues[user_id] = []
             self.user_queues[user_id].append(queue_item)
 
             # Insert into the main queue with priority for premium
             if is_premium:
-                # Find the first non-premium user and insert before them
+                # Find the first non premium user and insert before them
                 insert_at = len(self.queue)
                 for i, item in enumerate(self.queue):
                     if not item.is_premium:
@@ -83,7 +83,7 @@ class QueueManager:
                 # Remove from the main queue
                 self.queue.remove(item_to_remove)
                 
-                # Remove from the user-specific queue
+                # Remove from the user specific queue
                 user_specific_queue = self.user_queues.get(user_id, [])
                 if item_to_remove in user_specific_queue:
                     user_specific_queue.remove(item_to_remove)

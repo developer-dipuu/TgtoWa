@@ -1,5 +1,5 @@
 """
-Stickera and emoji conversion functionality for Telegram to WhatsApp converter (Telethon Version)
+Sticker and emoji conversion functionality for Telegram to WhatsApp converter
 """
 
 import os
@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 class StickerConverter:
     def __init__(self, client: TelegramClient):
         self.client = client
-
+    
+    # to get the sticker object (information, its not downloading the pack), it is called in the handle_message
     async def get_sticker_set(self, pack_input: Any):
         """
         Get sticker/emoji set from Telegram using either a short name (str) 
@@ -51,7 +52,8 @@ class StickerConverter:
         except Exception as e:
             logger.error(f"Failed to get set {pack_input}: {e}")
             return None
-    
+        
+ 
     async def download_sticker(self, sticker: Document, temp_dir: str) -> Optional[str]:
         """
         Download a single sticker or emoji file with a retry mechanism.
@@ -113,6 +115,7 @@ class StickerConverter:
             logger.error(f"Failed to convert {input_path} to WebP: {e}")
             return False
     
+    # it is the one who creates all wastickers file for a sticker pack  by calling other helpers and return to the caller _run_conversion in bot_handlers
     async def create_wastickers_pack(self, sticker_set, author_name: str) -> List[str]:
         """Create .wastickers file(s) from a sticker/emoji set."""
         wastickers_files = []
@@ -154,6 +157,8 @@ class StickerConverter:
         finally:
             cleanup_temp_directory(temp_dir)
 
+    # creates a single .wastcker file and retuen it to the caller create_wastickers_pack
+    # it is the one who calls the download_sticker, convert_to_webp, _create_icon, _create_metadata_files, _create_wastickers_archive
     async def _create_single_wastickers_pack(self, stickers: List[Document], title: str, 
                                            author_name: str, temp_dir: str, pack_number: int,
                                            file_name: str) -> Optional[str]:
@@ -191,7 +196,7 @@ class StickerConverter:
         except Exception as e:
             logger.error(f"Failed to create single wastickers pack: {e}")
             return None
-
+        
     async def _create_icon(self, first_sticker_path: str, icon_path: str):
         """Create icon.png from the first sticker/emoji."""
         try:

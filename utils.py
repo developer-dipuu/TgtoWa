@@ -36,6 +36,7 @@ def extract_pack_name_from_url(url: str) -> Optional[str]:
             return match.group(1)
     
     return None
+
 # we dont use it as images are already samll in size maybe we need it in future lets see
 def optimize_image_size(image_data: bytes, max_size: int, dimensions: Tuple[int, int]) -> bytes:
     """Optimize image to meet size constraints while maintaining quality"""
@@ -139,7 +140,7 @@ def estimate_wait_time(sticker_documents: list, num_packs: Optional[int]) -> flo
             total_seconds += 1
         elif doc.mime_type == 'image/webp': # WebP
             total_seconds += 0.1
-        else: # Others if any we prbbly wont get any
+        else: # Others if any, we prbbly wont get any
             total_seconds += 1
 
     """Uncomment this part if you want to add some more logic to estimated time based on number of packs it will create
