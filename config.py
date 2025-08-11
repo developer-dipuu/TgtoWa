@@ -1,50 +1,58 @@
 """
 Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
 """
+# ========= Should be changed ===================
 
-# Telegram API Credentials
-API_ID =  # Your API ID (must)
+# Telegram API things (its must )
+API_ID = 3453453 # Your API ID (must)
 API_HASH = "" # Your API HASH (must)
 BOT_TOKEN = "" # Your bot token (must)
 
-OWNER_ID =  # 👈 Replace with your Telegram User ID (needed for approving admins and users)
+OWNER_ID = 1234567890 # 👈 Replace with your Telegram User ID (needed for approving admins and users)
 
 # ‼️ Must READ
 ''' Required channels to use this bot (leave empty if you don't want to force user to join)
 For public channel/group add a tuple like this ("Name", "@username")
 For private channel/group add a tuple like this ("Name", "link", -1212324141) 
--1212324141 is your channel/group id get it by forwarding any of your channel/group's message to @username_to_id_bot (or @MissRose_bot and reply /id to that message)
+-1212324141 is your channel/group id, get it by forwarding any of your channel/group's message to @username_to_id_bot (or @MissRose_bot and reply /id to that message)
  ⚠️⚠️⚠️ [("Public_Channel_Name", "@channel_1_username"), ("Private_Channel_Name", "https://t.me/+abcdefghijk", -34876824274 )] ⚠️⚠️⚠️  Use this format Only '''
 
 REQUIRED_CHANNELS = []
 
 
 # Support group for bot related queries (will be used in help message)
-SUPPORT_GROUP = "@your_support_group_here"    # if you're done editing this far you are good to go
+SUPPORT_GROUP = "@your_support_group_here"    # if you're done editing this far you are good to go (you may review DOWNLOAD_TIMEOUT but dont change other shits unless you know what you are doing)
 
-# Sticker/emoji pack constraints
+
+# =============================================
+
+
+# ------ Sticker/emoji pack constraints ------
+# dont change these
 MAX_STICKERS_PER_PACK = 30
-MAX_CONCURRENT_REGULAR_REQUESTS = 1
-MAX_CONCURRENT_PREMIUM_REQUESTS = 3
 WEBP_QUALITY = 80  # Default quality at the start of the compression
 MAX_ICON_SIZE = 50 * 1024      # 50KB
 STICKER_DIMENSIONS = (512, 512)
 ICON_DIMENSIONS = (96, 96)
+# you may change this if you want
+MAX_CONCURRENT_REGULAR_REQUESTS = 1 
+MAX_CONCURRENT_PREMIUM_REQUESTS = 3
 
-
-# Timeouts and processing limits
-DOWNLOAD_TIMEOUT = 30  # seconds to wait for a sticker/emoji file to download
+#----- Timeouts and processing limits -------
+DOWNLOAD_TIMEOUT = 30  # seconds to wait for a sticker/emoji file to download  # 👉 if you run the bot on a server or on any machine with good & stable internet speed then i recommend to make it 10
 UPLOAD_TIMEOUT = 60    # seconds to wait for a .wastickers file to upload
 MAX_CONVERSION_SECONDS_REGULAR = 300  # 5 minutes. Max estimated time for non-premium users
 DB_UPLOAD_TIMEOUT = 30
 MAX_DOWNLOAD_RETRIES = 3
 
-# File paths 
+# ------File paths ---------- 
+DATA_DIR = "data"
 TEMP_DIR = "temp"
 OUTPUT_DIR = "output"
 LOG_DIR = "~/screenlogs" # if you have setup the logging system like screen's logging and use logrotate to manage logs (for /getlogs command)
-DB_PATH = "bot_data.db" # its by default in the same working directory but if you messup with the code and chnage it, change it here too for the /getdb command to work
+DB_PATH = f"{DATA_DIR}/bot_data.db" # its by default in the data directory but if you change that it should get changed automatically unless you mess it up, its needed for the /getdb command to work
 
+# ------ formatting a few things ----------
 # formatting properly for use
 SUPPORT_GROUP_LINK = SUPPORT_GROUP if SUPPORT_GROUP.startswith(('https://t.me/', 'http://t.me/', 'https://telegram.me/', 'http://telegram.me/', 't.me/')) else f"https://t.me/{SUPPORT_GROUP.lstrip("@")}"
 REQUIRED_CHANNELS_FORMATTED = [
@@ -54,7 +62,9 @@ REQUIRED_CHANNELS_FORMATTED = [
 # Channel list converted to string 
 _channel_list_str = "\n".join([f"• <b><a href=\"{channel[1]}\">{channel[0]}</a></b>" for channel in REQUIRED_CHANNELS_FORMATTED])
 
-# Messages
+
+
+#================ Messages ===============
 
 START_MESSAGE_FORMAT = f"""
 🎉 <b>Welcome to {{bot_username}}</b> 🎉

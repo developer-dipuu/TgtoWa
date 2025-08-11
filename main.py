@@ -4,9 +4,10 @@ Main entry point for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bo
 
 import logging
 import asyncio
+import os
 from telethon import TelegramClient
 
-from config import API_ID, API_HASH, BOT_TOKEN
+from config import API_ID, API_HASH, BOT_TOKEN, DATA_DIR
 from bot_handlers import BotHandlers
 from database import init_db
 
@@ -22,11 +23,12 @@ async def main():
     """
     Initializes the Telethon client, registers handlers, and runs the bot.
     """
+    os.makedirs(DATA_DIR, exist_ok=True)
     # Initilize the database
     init_db()
     # We use a session name for the bot so it can remember its state.
-    # The session file will be created in the same directory.
-    client = TelegramClient('bot_session', API_ID, API_HASH)
+    # The session file will be created in the DATA_DIR directory.
+    client = TelegramClient(f'{DATA_DIR}/bot_session', API_ID, API_HASH)
 
 
     logger.info("Starting bot...")
