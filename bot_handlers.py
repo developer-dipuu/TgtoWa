@@ -7,12 +7,15 @@ import glob
 import zipfile
 import asyncio
 import logging
+import re
+import json
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, Button
 from telethon.errors.rpcerrorlist import UserNotParticipantError
 from telethon.events import StopPropagation
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import DocumentAttributeSticker, DocumentAttributeCustomEmoji, Message
+from typing import Optional
 
 from config import *
 from utils import *
@@ -33,12 +36,21 @@ class BotHandlers:
         self.processing_lock = asyncio.Lock()
         self.bot_username = f"@{bot_info.username}"
         self.user_states = {}
+        self.user_states_lock = asyncio.Lock()
         self.reply_locks = {}
         self.reply_locks_lock = asyncio.Lock()
+        self.pending_actions = {}
+
         # formatted start message
         self.START_MESSAGE = START_MESSAGE_FORMAT.format(
             bot_username=self.bot_username,
         )
+        #background tasks for cleanup
+        asyncio.create_task(self._reply_locks_cleanup_loop(ttl_seconds=3600))
+        asyncio.create_task(self._user_states_cleanup_loop(ttl_confirm_seconds=3600, ttl_message_seconds=86400, check_interval_seconds=3600))
+        asyncio.create_task(self._premium_users_cleanup_loop(check_interval_seconds=86400))
+
+        
         
 
     def check_banned(func):
@@ -63,13 +75,14 @@ class BotHandlers:
         self.client.add_event_handler(self.commands_command, events.NewMessage(pattern='/commands', func=lambda e: e.is_private))
         # contact commands
         self.client.add_event_handler(self.contact_command, events.NewMessage(pattern='/contact', func=lambda e: e.is_private))
-        self.client.add_event_handler(self.handle_user_contact_message, events.NewMessage(func=lambda e: e.is_private and self.user_states.get(e.sender_id) == "awaiting_contact_message"))
+        self.client.add_event_handler(self.handle_user_contact_message, events.NewMessage(func=lambda e: e.is_private ))
         self.client.add_event_handler(self.handle_admin_reply, events.NewMessage(func=lambda e: e.is_private and e.is_reply and db.is_admin(e.sender_id)))
         # owner commands
         self.client.add_event_handler(self.promote_command, events.NewMessage(pattern=r'/promote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.demote_command, events.NewMessage(pattern=r'/demote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.broadcast_command, events.NewMessage(pattern=r'/broadcast(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.broadcast_command, events.NewMessage(pattern=r'/broadcast@' + self.bot_username.lstrip('@') + r'(?:$|\s.*)', func=lambda e: not e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.send_command, events.NewMessage(pattern=r'/send(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.gstats_command, events.NewMessage(pattern=r'/gstats', func=lambda e: db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.getdb_command, events.NewMessage(pattern='/getdb', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.getlogs_command, events.NewMessage(pattern='/getlogs', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
@@ -85,8 +98,8 @@ class BotHandlers:
         self.client.add_event_handler(self.unban_command, events.NewMessage(pattern=r'/unban', func=lambda e: e.is_private))
 
         # Handle all other private messages
-        self.client.add_event_handler(self.handle_message, events.NewMessage(func=lambda e: e.is_private and not e.text.startswith('/') and (e.text or e.sticker)))
-        self.client.add_event_handler(self.handle_callback_query, events.CallbackQuery(func=lambda e: e.is_private))
+        self.client.add_event_handler(self.handle_message, events.NewMessage(func=lambda e: e.is_private and ((e.text and not e.text.startswith('/')) or e.sticker)))
+        self.client.add_event_handler(self.handle_callback_query, events.CallbackQuery())
 
     
     def _create_channel_join_buttons(self) -> list:
@@ -109,6 +122,102 @@ class BotHandlers:
         
         keyboard.append([Button.inline("✅ Check Again", b"check_membership")])
         return keyboard
+    
+    # for removingadmin locks periodically so that they dont stay in memory forever
+    async def _reply_locks_cleanup_loop(self, ttl_seconds=3600):
+        """Periodically clean old reply locks to prevent memory growth.
+        Only remove locks that are unlocked AND not used for > ttl_seconds."""
+        while True:
+            await asyncio.sleep(ttl_seconds)
+            logger.info("Cleaning old admin reply locks...")
+            try:
+                now = datetime.now()
+                async with self.reply_locks_lock:
+                    to_remove = []
+                    for cid, entry in list(self.reply_locks.items()):
+                        lock = entry.get("lock")
+                        last = entry.get("last_used", now)
+                        # remove only if unlocked and idle longer than ttl_seconds
+                        if (not lock.locked()) and ((now - last).total_seconds() > ttl_seconds):
+                            to_remove.append(cid)
+                    for cid in to_remove:
+                        self.reply_locks.pop(cid, None)
+            except Exception as e:
+                logger.error(f"FATAL: The _reply_locks_cleanup_loop crashed: {e}", exc_info=True)
+            logger.info("cleaned up old admin locks.")
+
+    async def _user_states_cleanup_loop(self,
+                                        ttl_confirm_seconds: int = 3600,
+                                        ttl_message_seconds: int = 86400,
+                                        check_interval_seconds: int = 600):
+        """
+        Periodically removes stale user_states entries.
+        - awaiting_contact_confirmation: default 1 hour TTL
+        - awaiting_contact_message: default 24 hour TTL
+        Runs every `check_interval_seconds`.
+        """
+        while True:
+            await asyncio.sleep(check_interval_seconds)
+            logger.info("Cleaning old user contact state entries...")
+            try:
+                now = datetime.now()
+                async with self.user_states_lock:
+                    to_remove = []
+                    for uid, entry in list(self.user_states.items()):
+                        state = entry.get("state")
+                        ts = entry.get("ts", now)
+                        age = (now - ts).total_seconds()
+
+                        if state == "awaiting_contact_confirmation":
+                            ttl = ttl_confirm_seconds
+                        elif state == "awaiting_contact_message":
+                            ttl = ttl_message_seconds
+                        else:
+                            # Unknown/other states: be conservative and use the larger TTL
+                            ttl = max(ttl_confirm_seconds, ttl_message_seconds)
+
+                        if age > ttl:
+                            to_remove.append(uid)
+
+                    for uid in to_remove:
+                        self.user_states.pop(uid, None)
+            except Exception as e:
+                logger.error(f"FATAL: The _user_states_cleanup_loop crashed: {e}", exc_info=True)
+            logger.info("cleaned up old user contact state entries.")
+
+    async def _premium_users_cleanup_loop(self, check_interval_seconds: int = 86400):
+        """Periodically cleans up expired premium users from the database."""
+        # wait a bit on startup to ensure everything is connected and ready
+        await asyncio.sleep(60) 
+        while True:
+            try:
+                logger.info("Running scheduled cleanup of expired premium users...")
+                removed_count = db.remove_expired_premium_users()
+                if removed_count > 0:
+                    logger.info(f"SYSTEM: Automatically removed {removed_count} expired premium users.")
+                else:
+                    logger.info("No expired premium users found to remove.")
+            except Exception as e:
+                logger.error(f"FATAL: The _premium_users_cleanup_loop crashed: {e}", exc_info=True)
+            
+            # Wait for the next interval
+            await asyncio.sleep(check_interval_seconds)
+
+
+    # helpers for safe access to user_states
+    async def _set_user_state(self, user_id: int, state: str):
+        async with self.user_states_lock:
+            self.user_states[user_id] = {"state": state, "ts": datetime.now()}
+
+    async def _get_user_state(self, user_id: int) -> Optional[str]:
+        async with self.user_states_lock:
+            entry = self.user_states.get(user_id)
+            return entry["state"] if entry else None
+
+    async def _pop_user_state(self, user_id: int) -> Optional[dict]:
+        async with self.user_states_lock:
+            return self.user_states.pop(user_id, None)
+
 
     async def check_user_membership(self, user_id: int) -> bool:
         """Check if user is a member of required channels."""
@@ -292,7 +401,7 @@ class BotHandlers:
                 entity=placeholder_message.chat_id,
                 message=placeholder_message.id,
                 text=final_message_text,
-                buttons=[[Button.inline("📊 Check Queue", b"check_queue")],[Button.inline("❌ Cancel", data=f"cancel_{log_id}".encode())]],
+                buttons=[[Button.inline("📊 Check Queue", b"check_queue")],[Button.inline("❌ Cancel", data=f"cancel_item_{log_id}".encode())]],
                 link_preview=False, parse_mode='html'
             )
 
@@ -426,7 +535,7 @@ class BotHandlers:
                 if num_packs == 1:
                     await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
                 else:
-                    await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack part {i+1}. Please try aagain later.")
+                    await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack part {i+1}. Please try again later.")
                 raise asyncio.TimeoutError("Time out while uploading the pack.")
             finally:
                 if os.path.exists(file_path):
@@ -474,7 +583,7 @@ class BotHandlers:
                     await queue_manager.complete_processing(item.user_id, success)               
 
     # Admin commands starts here
-    async def _get_user_from_event(self, event: events.NewMessage.Event, arg: Optional[str]) -> Optional[Message.sender]:
+    async def _get_user_from_event(self, event: events.NewMessage.Event, arg: Optional[str]) -> Optional[object]:
         """Helper to get user from command argument or reply."""
         if event.reply_to_msg_id and not arg:
             reply_msg = await event.get_reply_message()
@@ -634,7 +743,7 @@ class BotHandlers:
     async def contact_command(self, event: events.NewMessage.Event):
         """Handles the /contact command, prompting the user to send a message."""
         user = await event.get_sender()
-        self.user_states[user.id] = "awaiting_contact_confirmation"
+        await self._set_user_state(user.id, "awaiting_contact_confirmation")
 
         buttons = [
             [Button.inline("✉️ Send Message", b"contact_send"), Button.inline("❌ Cancel", b"contact_cancel")],
@@ -663,11 +772,14 @@ class BotHandlers:
     @check_banned
     async def handle_user_contact_message(self, event: events.NewMessage.Event):
         """Forwards a user's message to all admins when they are in the 'awaiting_contact_message' state."""
+        state = await self._get_user_state(event.sender_id)
+        if state != "awaiting_contact_message":
+            return
+        
         user = await event.get_sender()
         
         # Clean up state immediately to prevent accidental re-triggering
-        if user.id in self.user_states:
-            del self.user_states[user.id]
+        await self._pop_user_state(user.id)
 
         # extract message content and log it to the database
         message_content = self._get_message_content_for_db(event.message)
@@ -725,10 +837,15 @@ class BotHandlers:
         
         # Get or create a lock for this specific contact_id
         async with self.reply_locks_lock:
-            if contact_id not in self.reply_locks:
-                self.reply_locks[contact_id] = asyncio.Lock()
+            entry = self.reply_locks.get(contact_id)
+            if not entry:
+                entry = {"lock": asyncio.Lock(), "last_used": datetime.now()}
+                self.reply_locks[contact_id] = entry
 
-        contact_lock = self.reply_locks[contact_id]
+        contact_lock = entry["lock"]
+
+        # update last_used immediately before we wait so cleanup won't remove it mid-wait
+        entry["last_used"] = datetime.now()
 
         async with contact_lock:
             # Check if this message has been replied already
@@ -771,10 +888,55 @@ class BotHandlers:
                     buttons.insert(1, [Button.inline("🔍 Show Reply Details", f"contact_details_{contact_id}_{admin_reply_msg_id}")])
 
                 await event.reply(prompt_text, buttons=buttons)
-            
+
+            entry["last_used"] = datetime.now()
+
         raise StopPropagation
 
-    # owner's command
+    # owner's commands
+    # action helper
+    async def _propose_action(self, event, action_type: str, target_ids: list, message_to_send, text_to_send, no_forward, silent_broadcast):
+        """Handles the confirmation flow for /send and /broadcast."""
+        action_id = os.urandom(8).hex()
+
+        # Store pending action details
+        self.pending_actions[action_id] = {
+            "action_type": action_type,
+            "target_ids": target_ids,
+            "message_to_send": message_to_send,
+            "text_to_send": text_to_send,
+            "no_forward": no_forward,
+            "silent": silent_broadcast
+        }
+
+        # Send preview to owner
+        preview_header = (
+            f"**PREVIEW for `{action_type.upper()}`**\n\n"
+            f"This message will be sent to **{len(target_ids)}** user(s)."
+        )
+        await self.client.send_message(event.chat_id, preview_header)
+
+        # Send the actual content preview
+        if text_to_send: 
+            # Scenario: pure text from the command
+            await self.client.send_message(event.chat_id, text_to_send, silent= silent_broadcast, link_preview=False)
+        elif message_to_send: 
+            if no_forward:
+                # Scenario: Send a copy of the replied/media message
+                await self.client.send_message(event.chat_id, message_to_send, silent= silent_broadcast)
+            else:
+                # Scenario: Forward the replied/media message
+                await self.client.forward_messages(event.chat_id, message_to_send, silent= silent_broadcast)
+
+        # Send confirmation prompt
+        buttons = [
+            [Button.inline(f"✅ Yes, {action_type.capitalize()}", data=f"confirm_action_{action_id}")],
+            [Button.inline("❌ Cancel", data=f"cancel_action_{action_id}")]
+        ]
+        await self.client.send_message(event.chat_id, f"Do you want to proceed with this {action_type}?", buttons=buttons)
+        raise StopPropagation
+
+
     async def broadcast_command(self, event: events.NewMessage.Event):
         """Owner command to broadcast a message to all users."""
         
@@ -800,11 +962,10 @@ class BotHandlers:
                 message_to_broadcast = event.message
             else:
                 # Scenario 3: Extract text content from the command message stripping the command and flags        
-                content_index = 1 # Start after '/broadcast'
-                if len(command_parts) > 1 and command_parts[1].lower() in ('-nf', '-s'):
-                    content_index = 2 # Start after first flag
-                if len(command_parts) > 2 and command_parts[2].lower() in ('-nf', '-s'):
-                    content_index = 3 # Start after second flag
+                content_index = 1
+                for part in command_parts[1:3]:
+                    if part.lower() in ('-nf', '-s'):
+                        content_index += 1
 
                 if len(command_parts) > content_index:
                     text_to_broadcast = " ".join(command_parts[content_index:])
@@ -819,99 +980,97 @@ class BotHandlers:
             )
             return
 
-        # Determine content and flags for logging
-        flags_for_db = " ".join(sorted(list(flags))) if flags else "none"
-        is_forward = False
-        fwd_chat_id = None
-        fwd_msg_id = None
-        message_for_db = ""
-
-        if text_to_broadcast:
-            message_for_db = text_to_broadcast
-        elif message_to_broadcast:
-            if message_to_broadcast.forward:
-                is_forward = True
-                try:
-                    # Safely get the original chat/user ID.
-                    if from_peer := getattr(message_to_broadcast.forward, 'from_id', None):
-                         fwd_chat_id = getattr(from_peer, 'channel_id', None) or \
-                                       getattr(from_peer, 'chat_id', None) or \
-                                       getattr(from_peer, 'user_id', None)
-
-                    # Safely get the original message ID.
-                    # It could be in 'channel_post' or 'saved_from_msg_id'.
-                    fwd_msg_id = getattr(message_to_broadcast.forward, 'channel_post', None)
-
-                except Exception as e:
-                    logger.warning(f"Could not extract full forward info for logging: {e}")
-
-            message_for_db = self._get_message_content_for_db(message_to_broadcast)
-
-
 
         # all users we have 
         user_ids = db.get_all_user_ids() 
-        total_users = len(user_ids)
-        
-        status_msg = await event.reply(f"🚀 Starting broadcast to {total_users} users...")
-        
-        success_count = 0
-        fail_count = 0
-        
-        # Loop through all users and send the broadcast
-        for user_id in user_ids:
+        if not user_ids:
+            await event.reply("❌ No users found in the database to broadcast to.")
+            return
+
+        # call the helper to prompt for confirmation, he'll handle the rest
+        await self._propose_action(
+            event, 'broadcast', user_ids, message_to_broadcast, 
+            text_to_broadcast, no_forward, silent_broadcast
+        )
+
+
+    async def send_command(self, event: events.NewMessage.Event):
+        """Owner command to send a message to specific users with confirmation."""
+        message_to_send = None
+        text_to_send = None
+
+        command_parts = event.text.split()
+        flags = {part.lower() for part in command_parts[:3] if part.startswith('-')}
+        no_forward = '-nf' in flags
+        silent_broadcast = '-s' in flags
+
+        # Extract user list from parentheses
+        user_list_match = re.search(r'\((.*?)\)', event.text)
+        if not user_list_match:
+            await event.reply(
+                "ℹ️ **Usage:** Reply to a message with `/send [-nf] [-s] (user1 @user2)`\n"
+                "or send `/send [-nf] [-s] (user1 @user2) <your message>`.\n\n"
+                "• `-nf`: Send as a copy instead of forwarding (no forward tag).\n"
+                "• `-s`: Send silently (no notification for users).\n"
+                "Note: User IDs/usernames must be in parentheses `()`."
+            )
+            return
+
+        user_inputs = user_list_match.group(1).split()
+        if not user_inputs:
+            await event.reply("❌ The user list is either empty or not provided.")
+            return
+
+        # Resolve user inputs to IDs
+        status_msg = await event.reply(f"Resolving {len(user_inputs)} user(s)...")
+        target_ids = []
+        failed_users = []
+        for user_input in user_inputs:
             try:
-                if text_to_broadcast:
-                    # Scenario: Broadcast pure text from the command
-                    await self.client.send_message(
-                        user_id, 
-                        text_to_broadcast, 
-                        link_preview=False, 
-                        silent=silent_broadcast
-                    )
-                elif no_forward:
-                    # Scenario: Send a copy of the replied/media message
-                    await self.client.send_message(
-                        user_id, 
-                        message_to_broadcast, 
-                        silent=silent_broadcast
-                    )
-                else:
-                    # Scenario: Forward the replied/media message
-                    await self.client.forward_messages(
-                        user_id, 
-                        message_to_broadcast, 
-                        silent=silent_broadcast
-                    )
-                
-                success_count += 1
-            except Exception as e:
-                fail_count += 1
-                logger.warning(f"Failed to broadcast to user {user_id}: {e}")
-            
-            # Short delay to avoid hitting Telegram's API rate limits
-            await asyncio.sleep(0.1)
+                entity_to_find = user_input.strip()
+                if entity_to_find.isdigit():
+                    entity_to_find = int(entity_to_find)
+                user_entity = await self.client.get_entity(entity_to_find)
+                target_ids.append(user_entity.id)
+            except Exception:
+                failed_users.append(user_input)
 
-        # Log the broadcast event to the database
-        db.log_broadcast(
-            admin_id=event.sender_id,
-            message_content=message_for_db,
-            flags=flags_for_db,
-            total_users=total_users,
-            success_count=success_count,
-            fail_count=fail_count,
-            is_forward=is_forward,
-            forwarded_from_id=fwd_chat_id,
-            forwarded_message_id=fwd_msg_id
+        await status_msg.delete()
+        if failed_users:
+            await event.reply(f"❌ Could not find the following users: `{'`, `'.join(failed_users)}`")
+
+        if not target_ids:
+            await event.reply("❌ No valid users found to send the message to.")
+            return
+
+        # Remove the user list and flags from the text to get the message content
+        text_without_users = re.sub(r'\((.*?)\)', '', event.text).strip()
+
+        text_parts = text_without_users.split()
+        text_without_flags = None
+        content_index = 1
+        for part in text_parts[1:3]:
+            if part.lower() in ('-nf', '-s'):
+                content_index += 1
+        if len(text_parts) > content_index:
+            text_without_flags = " ".join(text_parts[content_index:])
+
+
+        replied_msg = await event.get_reply_message()
+        if replied_msg:
+            message_to_send = replied_msg
+        elif text_without_flags:
+            text_to_send = text_without_flags
+
+        if not message_to_send and not text_to_send:
+            await event.reply("❌ No message content found. Please reply to a message or type your message after the user list.")
+            return
+
+        await self._propose_action(
+            event, 'send', list(set(target_ids)), message_to_send, 
+            text_to_send, no_forward, silent_broadcast
         )
 
-
-        await status_msg.edit(
-            f"✅ **Broadcast Complete!**\n\n"
-            f"• Sent to: `{success_count}` users\n"
-            f"• Failed for: `{fail_count}` users"
-        )
-        raise StopPropagation
 
     async def _gstats_send_list(self, event: events.CallbackQuery.Event, title: str, content: str, filename: str):
         """Helper to send gstats lists, sending as a file if too long."""
@@ -1329,6 +1488,30 @@ class BotHandlers:
         await event.reply(message)
         raise StopPropagation
     
+    async def _parse_user_and_reason(self, event: events.NewMessage.Event) -> tuple[Optional[object], str]:
+        """
+        Parses a command event to extract the target user and the reason.
+        Handles both replies and direct user arguments.
+        """
+        target_user = None
+        reason = "No reason provided."
+        command_text = event.text or ""
+
+        # if its a reply 
+        if event.reply_to_msg_id:
+            target_user = await self._get_user_from_event(event, None)
+            if target_user:
+                parts = command_text.split(maxsplit=1)
+                if len(parts) > 1:
+                    reason = parts[1]
+        else:
+            # Not a reply, parse user and reason from the command text
+            parts = command_text.split(maxsplit=2)
+            user_arg = parts[1] if len(parts) > 1 else None
+            reason = parts[2] if len(parts) > 2 else reason
+            target_user = await self._get_user_from_event(event, user_arg)
+        
+        return target_user, reason
 
     # silent ban command
     async def sban_command(self, event: events.NewMessage.Event):
@@ -1336,24 +1519,7 @@ class BotHandlers:
         if not db.is_admin(event.sender_id):
             raise StopPropagation
         
-        reason = "No reason provided."
-        target_user = None
-
-        # if its a reply 
-        if event.reply_to_msg_id:
-            target_user = await self._get_user_from_event(event, None)
-            if target_user:
-                command_parts = event.text.split(maxsplit=1)
-                if len(command_parts) > 1:
-                    reason = command_parts[1]
-            # User found from reply, the rest of the text is the reason
-            reason = event.text.split(maxsplit=1)[1] if len(event.text.split()) > 1 else reason
-        else:
-            # Not a reply, parse user and reason from the command text
-            parts = event.text.split(maxsplit=2)
-            user_arg = parts[1] if len(parts) > 1 else None
-            reason = parts[2] if len(parts) > 2 else reason
-            target_user = await self._get_user_from_event(event, user_arg)
+        target_user, reason = await self._parse_user_and_reason(event)
 
         if not target_user:
             await event.reply("ℹ️ **Usage:** `/sban <user_id/@username> [reason]` or reply to a user.")
@@ -1375,24 +1541,7 @@ class BotHandlers:
         if not db.is_admin(event.sender_id):
             raise StopPropagation
 
-        reason = "No reason provided."
-        target_user = None
-
-        # if its a reply 
-        if event.reply_to_msg_id:
-            target_user = await self._get_user_from_event(event, None)
-            if target_user:
-                command_parts = event.text.split(maxsplit=1)
-                if len(command_parts) > 1:
-                    reason = command_parts[1]
-            # User found from reply, the rest of the text is the reason
-            reason = event.text.split(maxsplit=1)[1] if len(event.text.split()) > 1 else reason
-        else:
-            # Not a reply, parse user and reason from the command text
-            parts = event.text.split(maxsplit=2)
-            user_arg = parts[1] if len(parts) > 1 else None
-            reason = parts[2] if len(parts) > 2 else reason
-            target_user = await self._get_user_from_event(event, user_arg)
+        target_user, reason = await self._parse_user_and_reason(event)
 
         if not target_user:
             await event.reply("ℹ️ **Usage:** `/ban <user_id/@username> [reason]` or reply to a user.")
@@ -1430,24 +1579,7 @@ class BotHandlers:
         if not db.is_admin(event.sender_id):
             raise StopPropagation
 
-        reason = "No reason provided."
-        target_user = None
-
-        # if its a reply 
-        if event.reply_to_msg_id:
-            target_user = await self._get_user_from_event(event, None)
-            if target_user:
-                command_parts = event.text.split(maxsplit=1)
-                if len(command_parts) > 1:
-                    reason = command_parts[1]
-            # User found from reply, the rest of the text is the reason
-            reason = event.text.split(maxsplit=1)[1] if len(event.text.split()) > 1 else reason
-        else:
-            # Not a reply, parse user and reason from the command text
-            parts = event.text.split(maxsplit=2)
-            user_arg = parts[1] if len(parts) > 1 else None
-            reason = parts[2] if len(parts) > 2 else reason
-            target_user = await self._get_user_from_event(event, user_arg)
+        target_user, reason = await self._parse_user_and_reason(event)
             
         if not target_user:
             await event.reply("ℹ️ **Usage:** `/unban <user_id/@username> [reason]` or reply to a user.")
@@ -1468,13 +1600,13 @@ class BotHandlers:
     @check_banned
     async def handle_callback_query(self, event: events.CallbackQuery.Event):
         """Handle callback queries from inline keyboards."""
-        user = await event.get_sender()
+        user_id = event.sender_id
         data = event.data.decode('utf-8')
 
-        await event.answer()
 
         if data == "check_membership":
-            if await self.check_user_membership(user.id):
+            await event.answer()
+            if await self.check_user_membership(user_id):
                 buttons = [
                     [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
                     [Button.url("💬 Support Group", SUPPORT_GROUP_LINK), Button.inline("🤖 Commands", b"commands")]
@@ -1486,16 +1618,18 @@ class BotHandlers:
                 except Exception as e:
                     logger.warning(f"Could not edit the Join message: {e}")
         
-        elif data.startswith("cancel_"):
-            log_id = int(data.split("_", 1)[1])
-            success = await queue_manager.cancel_item(user.id, log_id)
+        elif data.startswith("cancel_item_"):
+            await event.answer()
+            log_id = int(data.split("_", 2)[2])
+            success = await queue_manager.cancel_item(user_id, log_id)
             if success:
                 await event.edit("✅ Your request has been successfully cancelled.")
             else:
                 await event.edit("❌ Could not cancel. The item may be processing or completed.")
 
         elif data == "check_queue":
-            position = queue_manager.get_queue_position(user.id)
+            await event.answer()
+            position = queue_manager.get_queue_position(user_id)
             stats = queue_manager.get_queue_stats()
             if position:
                 message = QUEUE_CHECK_MESSAGE.format(
@@ -1515,12 +1649,14 @@ class BotHandlers:
                 logger.warning(f"Could not edit the check_queue message: {e}")
         
         elif data == "help":
+            await event.answer()
             buttons = [
                 [Button.inline("🏠 Back to Start", b"start"), Button.inline("🤖 Commands", b"commands")]
             ]
             await event.edit(HELP_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
 
         elif data == "start":
+            await event.answer()
             buttons = [
                 [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
                 [Button.url("💬 Support Group", SUPPORT_GROUP_LINK), Button.inline("🤖 Commands", b"commands")]
@@ -1528,7 +1664,8 @@ class BotHandlers:
             await event.edit(self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
         
         elif data == "premium":
-            message_text = await self._get_premium_message_text(user.id)
+            await event.answer()
+            message_text = await self._get_premium_message_text(user_id)
             buttons = [
                 [Button.url("💬 Contact Admin", SUPPORT_GROUP_LINK)],
                 [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
@@ -1536,27 +1673,31 @@ class BotHandlers:
             await event.edit(message_text, buttons=buttons, parse_mode='html', link_preview=False)
 
         elif data == "commands":
+            await event.answer()
             buttons = [
                 [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
             ]
             await event.edit(COMMANDS_MESSAGE, buttons=buttons, parse_mode='html')
         
         elif data == "contact_send":
-            user_id = event.sender_id
-            if self.user_states.get(user_id) == "awaiting_contact_confirmation":
-                self.user_states[user_id] = "awaiting_contact_message"
+            state = await self._get_user_state(user_id)
+            if state == "awaiting_contact_confirmation":
+                await event.answer()
+                await self._set_user_state(user_id, "awaiting_contact_message")
                 await event.edit("✅ Great! Please send the message you'd like to forward now.", buttons=[Button.inline("❌ Cancel", b"contact_cancel")])
             else:
                 await event.answer("This action has expired. Please use /contact again.", alert=True)
 
         elif data == "contact_cancel":
-            user_id = event.sender_id
-            if self.user_states.pop(user_id, None):
+            state = await self._pop_user_state(user_id)
+            if state:
                 await event.edit("Action cancelled.", buttons=None)
+                await event.answer()
             else:
                 await event.answer("Nothing to cancel.", alert=True)
 
         elif data.startswith("contact_force_reply_"):
+            await event.answer()
             try:
                 *_, contact_id_str, admin_msg_id_str = data.split("_")
                 contact_id = int(contact_id_str)
@@ -1578,7 +1719,7 @@ class BotHandlers:
                 # Send the reply and log it
                 await self.client.send_message(original_user_id, CONTACT_ADMIN_REPLY_HEADER, parse_mode='html')
                 sent_msg = await self.client.send_message(original_user_id, admin_msg)
-                db.log_admin_reply(contact_id, user.id, sent_msg.id, reply_content)
+                db.log_admin_reply(contact_id, user_id, sent_msg.id, reply_content)
                 logger.info(f"An admin replied to the already replied user {original_user_id}")
                 await event.edit("✅ Your additional reply has been sent.")
             except Exception as e:
@@ -1586,6 +1727,7 @@ class BotHandlers:
                 await event.edit(f"❌ An error occurred: {e}")
 
         elif data.startswith("contact_details_"):
+            await event.answer()
             *_, contact_id_str, admin_msg_id_str = data.split("_")
             contact_id = int(contact_id_str)
             
@@ -1630,6 +1772,7 @@ class BotHandlers:
             await event.edit(response_text, buttons=buttons, parse_mode='html', link_preview=False)
 
         elif data.startswith("contact_back_"):
+            await event.answer()
             # This allows the owner to go back to the initial confirmation prompt
             *_, contact_id_str, admin_msg_id_str = data.split("_")
             previous_replies = db.get_previous_replies(int(contact_id_str))
@@ -1644,8 +1787,14 @@ class BotHandlers:
 
         elif data == "contact_cancel_reply":
             await event.edit("❌ Action cancelled. The reply was not sent.")
-  
+
+        # gstats command button handlers
         elif data.startswith("gstats_"):
+            if not db.is_owner(user_id):
+                await event.answer("You are not authorized to perform this action.", alert=True)
+                return
+            await event.answer()
+
             action = data.split("_", 1)[1]
 
             if action == "premium":
@@ -1681,3 +1830,81 @@ class BotHandlers:
             elif action == "back":
                 message, buttons = await self._get_gstats_message_and_buttons()
                 await event.edit(message, buttons=buttons)
+
+        # Handle send/broadcast confirmation
+        if data.startswith(("confirm_action_", "cancel_action_")):
+            if not db.is_owner(user_id):
+                await event.answer("You are not authorized to perform this action.", alert=True)
+                return
+            
+            await event.answer()
+
+            action, action_id = data.split("_", 2)[::2]
+            if action_id not in self.pending_actions:
+                await event.edit("This action has expired or is invalid.")
+                return
+
+            if action == "cancel":
+                del self.pending_actions[action_id]
+                await event.edit("✅ Action cancelled.")
+                return
+
+            # If action is "confirm"
+            pending_action = self.pending_actions.pop(action_id)
+
+            action_type = pending_action['action_type']
+            target_ids = pending_action['target_ids']
+            message_to_send = pending_action['message_to_send']
+            text_to_send = pending_action['text_to_send']
+            no_forward = pending_action['no_forward']
+            silent = pending_action['silent']
+
+            await event.edit(f"🚀 Starting {action_type} to {len(target_ids)} users...")
+
+            success_count = 0
+            fail_count = 0
+
+            for target_id in target_ids:
+                try:
+                    if text_to_send:
+                        await self.client.send_message(target_id, text_to_send, link_preview=False, silent=silent)
+                    elif no_forward:
+                        await self.client.send_message(target_id, message_to_send, silent=silent)
+                    else:
+                        await self.client.forward_messages(target_id, message_to_send, silent=silent)
+                    success_count += 1
+                except Exception as e:
+                    fail_count += 1
+                    logger.warning(f"Failed to send message to user {target_id}: {e}")
+                await asyncio.sleep(0.1)
+
+            # Logging
+            flags_for_db = ""
+            if no_forward:
+                flags_for_db += "-nf"
+            if silent:
+                flags_for_db += "-s"
+            if not flags_for_db:
+                flags_for_db += "none"
+            
+            is_forward = False
+            fwd_chat_id, fwd_msg_id = None, None
+            message_for_db = text_to_send or self._get_message_content_for_db(message_to_send)
+
+            if message_to_send and message_to_send.forward:
+                is_forward = True
+                if from_peer := getattr(message_to_send.forward, 'from_id', None):
+                    fwd_chat_id = getattr(from_peer, 'channel_id', None) or getattr(from_peer, 'chat_id', None) or getattr(from_peer, 'user_id', None)
+                fwd_msg_id = getattr(message_to_send.forward, 'channel_post', None)
+
+            if action_type == 'broadcast':
+                db.log_broadcast(user_id, message_for_db, flags_for_db, len(target_ids), success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
+            elif action_type == 'send':
+                db.log_send(user_id, message_for_db, flags_for_db, target_ids, success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
+
+            await event.edit(
+                f"✅ **{action_type.capitalize()} Complete!**\n\n"
+                f"• Sent to: `{success_count}` users\n"
+                f"• Failed for: `{fail_count}` users"
+            )
+            return
