@@ -1,13 +1,16 @@
 
 import sqlite3
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 
-from config import OWNER_ID
+from config import OWNER_ID, DATA_DIR
 
+# Ensure the data directory exists before defining the DB file path
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_FILE = os.path.join(DATA_DIR, "bot_data.db")
 
-DB_FILE = "bot_data.db"
 logger = logging.getLogger(__name__)
 
 def get_db_connection():
@@ -81,7 +84,6 @@ def init_db():
                 )
             """)
 
-            # --- History Tables ---
             # admin_history
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS admin_history (
@@ -184,7 +186,7 @@ def init_db():
 
 
 
-# --- User Logging ---
+# User Logging
 def add_or_update_user(user_id: int, username: Optional[str], full_name: str):
     """Adds a new user or updates their details if they already exist."""
     safe_full_name = full_name[:129]
@@ -247,6 +249,7 @@ def get_all_admin_ids() -> List[int]:
             admin_ids.append(OWNER_ID)
         return admin_ids
 
+# for the owner's /gstats command
 def get_gstats() -> dict:
     """Gathers all global statistics for the /gstats command."""
     with get_db_connection() as conn:
@@ -319,7 +322,7 @@ def get_gstats_banned_list() -> list:
         return cursor.fetchall()
     
     
-# --- Conversion Logging ---
+# Conversion Logging
 def log_conversion_request(user_id: int, pack_url: str, is_emoji: bool) -> int:
     """Logs the start of a conversion request and returns the log ID."""
     with get_db_connection() as conn:
@@ -358,7 +361,7 @@ def update_conversion_log(log_id: int, status: str, completion_time: datetime, d
         conn.commit()
 
 
-# --- Role Checks (Owner, Admin, Premium) ---
+########### Role Checks (Owner, Admin, Premium) ###########
 def is_owner(user_id: int) -> bool:
     """Checks if a user is the owner."""
     return user_id == OWNER_ID
@@ -382,8 +385,7 @@ def is_premium(user_id: int) -> bool:
         )
         return cursor.fetchone() is not None
 
-
-# --- Admin Management ---
+#################  Admin Management ###########
 def add_admin(user_id: int, username: str, promoted_by: int):
     """Promotes a user to admin."""
     with get_db_connection() as conn:
@@ -411,7 +413,8 @@ def remove_admin(user_id: int, demoted_by: int) -> bool:
             return True
         return False
 
-# --- Premium User Management ---
+############# Premium User Management ############
+
 def add_premium(user_id: int, username: str, duration_days: int, added_by: int):
     """Adds or extends a user's premium subscription."""
     now = datetime.now()
@@ -491,7 +494,7 @@ def manage_premium_duration(user_id: int, days: int, admin_id: int, action: str)
         return new_expiry
     
 
-# --- Ban Management ---
+########## Ban Management ###########
 
 def is_banned(user_id: int) -> bool:
     """Checks if a user is in the banned table. This is the fast check."""
@@ -532,7 +535,7 @@ def unban_user(user_id: int, admin_id: int, reason: Optional[str]) -> bool:
             return True
         return False
 
-# --- Contact Logging ----
+############ Contact Logging #################
 
 def log_contact_message(user_id: int, user_message_id: int, message_text: str) -> int:
     """Logs a new contact message from a user into the contact_messages table and returns contact_id"""
@@ -603,7 +606,7 @@ def get_contact_details(contact_id: int) -> Optional[dict]:
 
         return {"user_message": contact_message, "admin_replies": replies}
 
-# ---- Broadcast Logging-----------------
+############ Broadcast Logging #####################
 
 def log_broadcast(admin_id: int, message_content: str, flags: str,
                   total_users: int, success_count: int, fail_count: int,
