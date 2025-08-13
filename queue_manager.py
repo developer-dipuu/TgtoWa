@@ -10,6 +10,10 @@ import logging
 from telethon import events
 
 logger = logging.getLogger(__name__)
+# Priority Levels
+SYSTEM_PRIORITY = 0
+REGULAR_USER_PRIORITY = 1
+PREMIUM_USER_PRIORITY = 2
 
 @dataclass
 class QueueItem:
@@ -21,7 +25,7 @@ class QueueItem:
     estimated_seconds: float
     log_id: int
     timestamp: datetime
-    is_premium: bool
+    priority: int
     event: events.NewMessage.Event
     is_cache_suspicious: bool = False
     status: str = "waiting"  # waiting, processing, completed, error
@@ -34,8 +38,8 @@ class QueueManager:
         self._lock = asyncio.Lock()
     
     async def add_to_queue(self, user_id: int, username: str, bot_reply_message_id: int, pack_input: Any,
-                           sticker_set: Any, estimated_seconds: float, log_id: int,  is_premium: bool,
-                           event: events.NewMessage.Event, is_cache_suspicious: bool) -> int:
+                           sticker_set: Any, estimated_seconds: float, log_id: int, priority: int,
+                            event: events.NewMessage.Event, is_cache_suspicious: bool) -> int:
         """Add user to queue and return position"""
         async with self._lock:
             
@@ -48,7 +52,7 @@ class QueueManager:
                 estimated_seconds=estimated_seconds,
                 log_id=log_id,
                 timestamp=datetime.now(),
-                is_premium=is_premium,
+                priority=priority,
                 event=event,
                 is_cache_suspicious=is_cache_suspicious
                 
@@ -59,19 +63,17 @@ class QueueManager:
                 self.user_queues[user_id] = []
             self.user_queues[user_id].append(queue_item)
 
-            # Insert into the main queue with priority for premium
-            if is_premium:
-                # Find the first non premium user and insert before them
-                insert_at = len(self.queue)
-                for i, item in enumerate(self.queue):
-                    if not item.is_premium:
-                        insert_at = i
-                        break
-                self.queue.insert(insert_at, queue_item)
-            else:
-                self.queue.append(queue_item)
-            
-            logger.info(f"Added {'premium' if is_premium else 'regular'} user {username} (ID: {user_id}) to queue for pack: {pack_input}")
+            # Insert into the main queue based on priority.
+            insert_at = len(self.queue)
+            for i, existing_item in enumerate(self.queue):
+                if existing_item.priority < queue_item.priority:
+                    insert_at = i
+                    break
+            self.queue.insert(insert_at, queue_item)
+
+            priority_map = {SYSTEM_PRIORITY: 'system', REGULAR_USER_PRIORITY: 'regular', PREMIUM_USER_PRIORITY: 'premium'}
+            priority_str = priority_map.get(priority, 'unknown')
+            logger.info(f"Added {priority_str} user {username} (ID: {user_id}) to queue for pack: {pack_input}")
             
             # Return the position of the newly added item
             return self.get_queue_position(user_id, specific_item=queue_item)
@@ -105,7 +107,7 @@ class QueueManager:
             return self.processing.sticker_set.set.id
         return None
     
-    
+
     async def get_next_item(self) -> Optional[QueueItem]:
         """Get next item to process"""
         async with self._lock:

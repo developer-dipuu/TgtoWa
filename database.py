@@ -879,3 +879,25 @@ def remove_from_cache(set_id: int):
         conn.execute("DELETE FROM cached_packs WHERE set_id = ?", (set_id,))
         conn.commit()
         logger.info(f"Removed pack {set_id} from cache.")
+
+def get_all_cached_packs() -> List[sqlite3.Row]:
+    """Gets a list of all currently cached packs."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT set_id, files_path FROM cached_packs")
+        return cursor.fetchall()
+
+def get_set_id_by_short_name(short_name: str) -> Optional[int]:
+    """Finds a sticker set's ID by its short name in sticker_set_stats."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT set_id FROM sticker_set_stats WHERE short_name = ?", (short_name,))
+        result = cursor.fetchone()
+        return result['set_id'] if result else None
+
+def get_cached_pack_by_id(set_id: int) -> Optional[sqlite3.Row]:
+    """Gets the file path for a single cached pack by its set_id."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT files_path FROM cached_packs WHERE set_id = ?", (set_id,))
+        return cursor.fetchone()

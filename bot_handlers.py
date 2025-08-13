@@ -21,7 +21,7 @@ from typing import Optional
 
 from config import *
 from utils import *
-from queue_manager import queue_manager
+from queue_manager import queue_manager, SYSTEM_PRIORITY, REGULAR_USER_PRIORITY, PREMIUM_USER_PRIORITY
 from sticker_converter import StickerConverter
 import database as db
 
@@ -90,6 +90,7 @@ class BotHandlers:
         self.client.add_event_handler(self.getdb_command, events.NewMessage(pattern='/getdb', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.getlogs_command, events.NewMessage(pattern='/getlogs', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.toggle_cache_command, events.NewMessage(pattern='/togglecache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.clearcache_command, events.NewMessage(pattern=r'/clearcache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         # Premium commands (admin use)
         self.client.add_event_handler(self.add_premium_command, events.NewMessage(pattern=r'/addpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.remove_premium_command, events.NewMessage(pattern=r'/removepremium(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
@@ -418,9 +419,9 @@ class BotHandlers:
         
         # If we reach here its a cache miss (or was a stale cache). now we got to queue it
 
-        # find estimated time
+        # find estimated time and user priority
         estimated_seconds = estimate_wait_time(sticker_set.documents, None)
-
+        priority = PREMIUM_USER_PRIORITY if is_premium else REGULAR_USER_PRIORITY
         # max conversion duration cap
         if not is_premium:
             if estimated_seconds > MAX_CONVERSION_SECONDS_REGULAR:
@@ -472,7 +473,7 @@ class BotHandlers:
                 sticker_set=sticker_set,
                 estimated_seconds=estimated_seconds,
                 log_id=log_id,
-                is_premium=is_premium,
+                priority=priority,
                 event=event,
                 is_cache_suspicious=is_suspicious
         )
@@ -1483,6 +1484,57 @@ class BotHandlers:
             )
         raise StopPropagation
 
+    async def clearcache_command(self, event: events.NewMessage.Event):
+        """Owner command to clear the cache for all or specific packs."""
+        args = event.text.split()[1:]
+
+        if not args:
+            await event.reply(
+                "ℹ️ **Usage:**\n"
+                "• `/clearcache all` - Clear the entire cache.\n"
+                "• `/clearcache <link1> <link2> ...` - Clear specific packs from the cache."
+            )
+            return
+
+        action_id = os.urandom(8).hex()
+        action_type = ""
+        confirm_message = ""
+        action_payload = {}
+
+        if args[0].lower() == 'all':
+            all_packs = db.get_all_cached_packs()
+            if not all_packs:
+                await event.reply("✅ The cache is already empty. Nothing to do!")
+                return
+            
+            action_type = "clearcache_all"
+            confirm_message = f"🗑️ Are you sure you want to clear the **entire cache**? This will remove **{len(all_packs)}** packs and cannot be undone."
+            action_payload = {"packs_to_clear": [{"set_id": p["set_id"], "path": p["files_path"]} for p in all_packs]}
+
+        else: # It's a list of links
+            pack_names = [extract_pack_name_from_url(link) for link in args]
+            valid_packs = [name for name in pack_names if name]
+
+            if not valid_packs:
+                await event.reply("❌ No valid sticker/emoji pack links found in your message.")
+                return
+
+            action_type = "clearcache_packs"
+            confirm_message = f"🗑️ You are about to clear the cache for **{len(valid_packs)}** pack(s). Are you sure you want to proceed?"
+            action_payload = {"pack_short_names": valid_packs}
+            
+        self.pending_actions[action_id] = {
+            "action_type": action_type,
+            "payload": action_payload,
+        }
+
+        buttons = [
+            [Button.inline("✅ Yes, Proceed", data=f"confirm_action_{action_id}")],
+            [Button.inline("❌ Cancel", data=f"cancel_action_{action_id}")]
+        ]
+        await event.reply(confirm_message, buttons=buttons)
+        raise StopPropagation
+
     # Admins commands
     async def add_premium_command(self, event: events.NewMessage.Event):
         """Admin command to add a premium user."""
@@ -2061,58 +2113,103 @@ class BotHandlers:
             pending_action = self.pending_actions.pop(action_id)
 
             action_type = pending_action['action_type']
-            target_ids = pending_action['target_ids']
-            message_to_send = pending_action['message_to_send']
-            text_to_send = pending_action['text_to_send']
-            no_forward = pending_action['no_forward']
-            silent = pending_action['silent']
 
-            await event.edit(f"🚀 Starting {action_type} to {len(target_ids)} users...")
+            if action_type in ('broadcast', 'send'):
+                target_ids = pending_action['target_ids']
+                message_to_send = pending_action['message_to_send']
+                text_to_send = pending_action['text_to_send']
+                no_forward = pending_action['no_forward']
+                silent = pending_action['silent']
 
-            success_count = 0
-            fail_count = 0
+                await event.edit(f"🚀 Starting {action_type} to {len(target_ids)} users...")
 
-            for target_id in target_ids:
-                try:
-                    if text_to_send:
-                        await self.client.send_message(target_id, text_to_send, link_preview=False, silent=silent)
-                    elif no_forward:
-                        await self.client.send_message(target_id, message_to_send, silent=silent)
-                    else:
-                        await self.client.forward_messages(target_id, message_to_send, silent=silent)
-                    success_count += 1
-                except Exception as e:
-                    fail_count += 1
-                    logger.warning(f"Failed to send message to user {target_id}: {e}")
-                await asyncio.sleep(0.1)
+                success_count = 0
+                fail_count = 0
 
-            # Logging
-            flags_for_db = ""
-            if no_forward:
-                flags_for_db += "-nf"
-            if silent:
-                flags_for_db += "-s"
-            if not flags_for_db:
-                flags_for_db += "none"
+                for target_id in target_ids:
+                    try:
+                        if text_to_send:
+                            await self.client.send_message(target_id, text_to_send, link_preview=False, silent=silent)
+                        elif no_forward:
+                            await self.client.send_message(target_id, message_to_send, silent=silent)
+                        else:
+                            await self.client.forward_messages(target_id, message_to_send, silent=silent)
+                        success_count += 1
+                    except Exception as e:
+                        fail_count += 1
+                        logger.warning(f"Failed to send message to user {target_id}: {e}")
+                    await asyncio.sleep(0.1)
+
+                # Logging
+                flags_for_db = ""
+                if no_forward:
+                    flags_for_db += "-nf"
+                if silent:
+                    flags_for_db += "-s"
+                if not flags_for_db:
+                    flags_for_db += "none"
+                
+                is_forward = False
+                fwd_chat_id, fwd_msg_id = None, None
+                message_for_db = text_to_send or self._get_message_content_for_db(message_to_send)
+
+                if message_to_send and message_to_send.forward:
+                    is_forward = True
+                    if from_peer := getattr(message_to_send.forward, 'from_id', None):
+                        fwd_chat_id = getattr(from_peer, 'channel_id', None) or getattr(from_peer, 'chat_id', None) or getattr(from_peer, 'user_id', None)
+                    fwd_msg_id = getattr(message_to_send.forward, 'channel_post', None)
+
+                if action_type == 'broadcast':
+                    db.log_broadcast(user_id, message_for_db, flags_for_db, len(target_ids), success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
+                elif action_type == 'send':
+                    db.log_send(user_id, message_for_db, flags_for_db, target_ids, success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
+
+                await event.edit(
+                    f"✅ **{action_type.capitalize()} Complete!**\n\n"
+                    f"• Sent to: `{success_count}` users\n"
+                    f"• Failed for: `{fail_count}` users"
+                )
+                return
             
-            is_forward = False
-            fwd_chat_id, fwd_msg_id = None, None
-            message_for_db = text_to_send or self._get_message_content_for_db(message_to_send)
+            elif action_type == 'clearcache_all':
+                packs_to_clear = pending_action['payload']['packs_to_clear']
+                await event.edit(f"Clearing all {len(packs_to_clear)} cached packs...")
+                
+                cleared_count = 0
+                for pack in packs_to_clear:
+                    shutil.rmtree(pack['path'], ignore_errors=True)
+                    db.remove_from_cache(pack['set_id'])
+                    cleared_count += 1
+                
+                await event.edit(f"✅ **Cache Cleared!**\nSuccessfully removed **{cleared_count}** packs.")
+                return
 
-            if message_to_send and message_to_send.forward:
-                is_forward = True
-                if from_peer := getattr(message_to_send.forward, 'from_id', None):
-                    fwd_chat_id = getattr(from_peer, 'channel_id', None) or getattr(from_peer, 'chat_id', None) or getattr(from_peer, 'user_id', None)
-                fwd_msg_id = getattr(message_to_send.forward, 'channel_post', None)
+            elif action_type == 'clearcache_packs':
+                pack_short_names = pending_action['payload']['pack_short_names']
+                await event.edit(f"Processing {len(pack_short_names)} packs to clear from cache...")
 
-            if action_type == 'broadcast':
-                db.log_broadcast(user_id, message_for_db, flags_for_db, len(target_ids), success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
-            elif action_type == 'send':
-                db.log_send(user_id, message_for_db, flags_for_db, target_ids, success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
+                success_list = []
+                fail_list = []
 
-            await event.edit(
-                f"✅ **{action_type.capitalize()} Complete!**\n\n"
-                f"• Sent to: `{success_count}` users\n"
-                f"• Failed for: `{fail_count}` users"
-            )
-            return
+                for name in pack_short_names:
+                    set_id = db.get_set_id_by_short_name(name)
+                    if not set_id:
+                        fail_list.append(f"• `{name}` (Not found)")
+                        continue
+                    
+                    cached_pack = db.get_cached_pack_by_id(set_id)
+                    if cached_pack:
+                        shutil.rmtree(cached_pack['files_path'], ignore_errors=True)
+                        db.remove_from_cache(set_id)
+                        success_list.append(f"• `{name}`")
+                    else:
+                        fail_list.append(f"• `{name}` (Not in cache)")
+                
+                response_message = "✅ **Cache Clearing Complete!**\n\n"
+                if success_list:
+                    response_message += f"**Successfully Cleared:**\n" + "\n".join(success_list) + "\n\n"
+                if fail_list:
+                    response_message += f"**Failed / Not Found:**\n" + "\n".join(fail_list)
+                
+                await event.edit(response_message)
+                return
