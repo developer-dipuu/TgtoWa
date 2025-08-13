@@ -197,6 +197,37 @@ def init_db():
                     FOREIGN KEY (admin_id) REFERENCES users (user_id)
                 )
             """)
+            
+            # sticker set stats 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sticker_set_stats (
+                    set_id INTEGER PRIMARY KEY,
+                    short_name TEXT UNIQUE NOT NULL,
+                    is_emoji BOOLEAN NOT NULL,
+                    pack_title TEXT,
+                    sticker_count INTEGER,
+                    request_count INTEGER DEFAULT 1,
+                    last_conversion_duration REAL,
+                    cache_score REAL DEFAULT 0.0,
+                    last_updated TIMESTAMP NOT NULL
+                )
+            """)
+
+            # For tracking which packs are currently cached
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cached_packs (
+                    set_id INTEGER PRIMARY KEY,
+                    cache_score REAL NOT NULL,
+                    cached_at TIMESTAMP NOT NULL,
+                    files_path TEXT NOT NULL,
+                    FOREIGN KEY (set_id) REFERENCES sticker_set_stats (set_id) ON DELETE CASCADE
+                )
+            """)
+
+            # Add an index for faster cache score lookups
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cached_packs_score ON cached_packs (cache_score)
+            """)
 
 
             conn.commit()
@@ -371,7 +402,7 @@ def update_conversion_log(log_id: int, status: str, completion_time: datetime, d
         if result:
             user_id = result['user_id']
             # Increment the correct counter
-            if status == "completed":
+            if status.startswith("completed"):
                 cursor.execute("UPDATE user_stats SET succeeded_requests = succeeded_requests + 1 WHERE user_id = ?", (user_id,))
             else: # "failed"
                 cursor.execute("UPDATE user_stats SET failed_requests = failed_requests + 1 WHERE user_id = ?", (user_id,))
@@ -718,3 +749,133 @@ def log_send(admin_id: int, message_content: str, flags: str,
         )
         conn.commit()
         logger.info(f"Logged /send from admin {admin_id}. Success: {success_count}, Fail: {fail_count}")
+
+
+############### Sticker Pack Stats & Caching #################
+
+def add_or_update_sticker_set_stats(set_id: int, short_name: str, is_emoji: bool, pack_title: str, sticker_count: int, conversion_duration: float) -> float:
+    """
+    Adds or updates a sticker pack's stats after a conversion.
+    Calculates and returns the new cache score.
+    """
+    from config import CACHE_SCORE_TIME_WEIGHT, CACHE_SCORE_REQUEST_WEIGHT
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Check current request count to calculate new score
+        cursor.execute("SELECT request_count FROM sticker_set_stats WHERE set_id = ?", (set_id,))
+        stat = cursor.fetchone()
+        
+        current_request_count = stat['request_count'] if stat else 0
+        new_request_count = current_request_count + 1
+        
+        # Calculate the cache score
+        cache_score = (CACHE_SCORE_TIME_WEIGHT * conversion_duration) + (CACHE_SCORE_REQUEST_WEIGHT * new_request_count)
+        
+        # Use INSERT ON CONFLICT to either create a new record or update an existing one
+        cursor.execute("""
+            INSERT INTO sticker_set_stats (set_id, short_name, is_emoji, pack_title, sticker_count, last_conversion_duration, cache_score, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(set_id) DO UPDATE SET
+                pack_title = excluded.pack_title,
+                short_name = excluded.short_name,
+                sticker_count = excluded.sticker_count,
+                request_count = request_count + 1,
+                last_conversion_duration = excluded.last_conversion_duration,
+                cache_score = ?,
+                last_updated = excluded.last_updated
+        """, (set_id, short_name, is_emoji, pack_title, sticker_count, conversion_duration, cache_score, datetime.now(), cache_score))
+        
+        conn.commit()
+        
+        logger.info(f"Updated stats for pack {short_name} (ID: {set_id}). New score: {cache_score:.2f}")
+        return cache_score
+
+def is_pack_cached(set_id: int, current_title: str, current_sticker_count: int) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Checks if a pack is cached and if the cache is up-to-date.
+
+    Args:
+        set_id: The ID of the sticker set.
+        current_title: The current title of the pack (from Telegram).
+        current_sticker_count: The current number of stickers in the pack (from Telegram).
+
+    Returns:
+        A tuple (status, data):
+        - ('hit', '/path/to/files') if the cache is valid.
+        - ('stale', '/path/to/files') if the cache exists but is outdated.
+        - ('miss', None) if the pack is not in the cache.
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Step 1: Check if the set_id even exists in our cache table.
+        cursor.execute("SELECT files_path FROM cached_packs WHERE set_id = ?", (set_id,))
+        cache_result = cursor.fetchone()
+
+        if not cache_result:
+            return 'miss', None  # It's not in the cache at all.
+
+        files_path = cache_result['files_path']
+
+        # Step 2: Since it's in the cache, let's check if it's stale by comparing stats.
+        cursor.execute("SELECT pack_title, sticker_count FROM sticker_set_stats WHERE set_id = ?", (set_id,))
+        stats_result = cursor.fetchone()
+
+        if not stats_result or \
+           stats_result['pack_title'] != current_title or \
+           stats_result['sticker_count'] != current_sticker_count:
+            # The stats don't match! The cached version is stale.
+            logger.warning(f"Stale cache detected for pack {set_id}. Title or sticker count has changed.")
+            return 'stale', files_path
+
+        # Step 3: It's in the cache and the stats match. It's a valid hit!
+        # As a bonus, we'll update its stats to reflect this new request, keeping it relevant.
+        cursor.execute("SELECT short_name, is_emoji, last_conversion_duration FROM sticker_set_stats WHERE set_id = ?", (set_id,))
+        pack_info = cursor.fetchone()
+        if pack_info:
+            add_or_update_sticker_set_stats(
+                set_id=set_id,
+                short_name=pack_info['short_name'],
+                is_emoji=pack_info['is_emoji'],
+                pack_title=current_title,
+                sticker_count=current_sticker_count,
+                conversion_duration=pack_info['last_conversion_duration']
+            )
+        logger.info(f"Cache hit for pack {set_id} at '{files_path}'.")
+        return 'hit', files_path
+
+def get_cache_info() -> Tuple[int, Optional[sqlite3.Row]]:
+    """
+    Gets the current number of items in the cache and the item with the lowest score.
+    Returns a tuple: (current_cache_size, lowest_score_item_row).
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM cached_packs")
+        count = cursor.fetchone()[0]
+        
+        lowest_item = None
+        if count > 0:
+            cursor.execute("SELECT * FROM cached_packs ORDER BY cache_score ASC LIMIT 1")
+            lowest_item = cursor.fetchone()
+            
+        return count, lowest_item
+
+def add_to_cache(set_id: int, cache_score: float, files_path: str):
+    """Adds a pack to the cache tracking table."""
+    with get_db_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO cached_packs (set_id, cache_score, cached_at, files_path) VALUES (?, ?, ?, ?)",
+            (set_id, cache_score, datetime.now(), files_path)
+        )
+        conn.commit()
+        logger.info(f"Added pack {set_id} to cache with score {cache_score:.2f}")
+
+def remove_from_cache(set_id: int):
+    """Removes a pack from the cache tracking table."""
+    with get_db_connection() as conn:
+        conn.execute("DELETE FROM cached_packs WHERE set_id = ?", (set_id,))
+        conn.commit()
+        logger.info(f"Removed pack {set_id} from cache.")

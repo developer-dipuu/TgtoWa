@@ -4,11 +4,11 @@ Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter 
 # ========= Should be changed ===================
 
 # Telegram API things (its must )
-API_ID = 3453453 # Your API ID (must)
+API_ID = 12345678 #  Replace with your API ID (must)
 API_HASH = "" # Your API HASH (must)
 BOT_TOKEN = "" # Your bot token (must)
 
-OWNER_ID = 1234567890 # 👈 Replace with your Telegram User ID (needed for approving admins and users)
+OWNER_ID = 1234567890 #  Replace with your Telegram User ID (needed for approving admins and users)
 
 # ‼️ Must READ
 ''' Required channels to use this bot (leave empty if you don't want to force user to join)
@@ -17,11 +17,11 @@ For private channel/group add a tuple like this ("Name", "link", -1212324141)
 -1212324141 is your channel/group id, get it by forwarding any of your channel/group's message to @username_to_id_bot (or @MissRose_bot and reply /id to that message)
  ⚠️⚠️⚠️ [("Public_Channel_Name", "@channel_1_username"), ("Private_Channel_Name", "https://t.me/+abcdefghijk", -34876824274 )] ⚠️⚠️⚠️  Use this format Only '''
 
-REQUIRED_CHANNELS = []
+REQUIRED_CHANNELS = []  # channels that users must join to use the bot
 
 
 # Support group for bot related queries (will be used in help message)
-SUPPORT_GROUP = "@your_support_group_here"    # if you're done editing this far you are good to go (you may review DOWNLOAD_TIMEOUT but dont change other shits unless you know what you are doing)
+SUPPORT_GROUP = "@your_support_group_here"  # if you're done editing this far you are good to go (you may review DOWNLOAD_TIMEOUT but dont change other shits unless you know what you are doing)
 
 
 # =============================================
@@ -51,6 +51,13 @@ TEMP_DIR = "temp"
 OUTPUT_DIR = "output"
 LOG_DIR = "~/screenlogs" # if you have setup the logging system like screen's logging and use logrotate to manage logs (for /getlogs command)
 DB_PATH = f"{DATA_DIR}/bot_data.db" # its by default in the data directory but if you change that it should get changed automatically unless you mess it up, its needed for the /getdb command to work
+
+# ------ Cache settings ----------
+CACHE_ENABLED = True # To use cache or not, owner can change it using the bot too but on bot restarts it will change to this default value
+CACHE_DIR = "cache"
+MAX_CACHED_PACKS = 1000 
+CACHE_SCORE_TIME_WEIGHT = 1.5   # Weight for conversion duration (in seconds)
+CACHE_SCORE_REQUEST_WEIGHT = 1 # Weight for the number of times a pack is requested
 
 # ------ formatting a few things ----------
 # formatting properly for use

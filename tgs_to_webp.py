@@ -306,7 +306,7 @@ class TGSToWebPConverter:
         SIZE_TARGET_RANGE = ((SIZE_CAP_KB-100) * 1024, SIZE_CAP_KB * 1024)  # Target [400KB, 500KB]
         CAP_FRAMES_SiZE = len(final_frames)
         FRAME_PIVOT = CAP_FRAMES_SiZE // 2
-        final_quality = self.quality
+        final_quality = self.quality if original_total_frames <= MAX_FRAMES_CAP else self.quality/2
         successful_buffer = None
         
 
@@ -367,9 +367,9 @@ class TGSToWebPConverter:
             frame_range_2 = (1, FRAME_PIVOT)
             fallback_frame_count = FRAME_PIVOT
 
-            quality_range_1 = (int(self.quality / 2), self.quality)
-            quality_range_2 = (1, int(self.quality / 2))
-            fallback_quality = int(self.quality/2)
+            quality_range_1 = (int(final_quality / 2), final_quality)
+            quality_range_2 = (1, int(final_quality / 2))
+            fallback_quality = int(final_quality/2)
 
              # --- Start the search  ---
 

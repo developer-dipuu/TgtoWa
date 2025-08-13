@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
 import logging
+from telethon import events
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +15,6 @@ logger = logging.getLogger(__name__)
 class QueueItem:
     user_id: int
     username: str
-    chat_id: int
-    message_id: int
     bot_reply_message_id: int
     pack_input: Any  # Can be a string (short_name) or an InputStickerSet object
     sticker_set: Any
@@ -23,6 +22,8 @@ class QueueItem:
     log_id: int
     timestamp: datetime
     is_premium: bool
+    event: events.NewMessage.Event
+    is_cache_suspicious: bool = False
     status: str = "waiting"  # waiting, processing, completed, error
 
 class QueueManager:
@@ -32,23 +33,25 @@ class QueueManager:
         self.user_queues: Dict[int, List[QueueItem]] = {}  # user_id -> QueueItem
         self._lock = asyncio.Lock()
     
-    async def add_to_queue(self, user_id: int, username: str, chat_id: int, message_id: int, bot_reply_message_id: int, pack_input: Any,
-                           sticker_set: Any, estimated_seconds: float, log_id: int,  is_premium: bool) -> int:
+    async def add_to_queue(self, user_id: int, username: str, bot_reply_message_id: int, pack_input: Any,
+                           sticker_set: Any, estimated_seconds: float, log_id: int,  is_premium: bool,
+                           event: events.NewMessage.Event, is_cache_suspicious: bool) -> int:
         """Add user to queue and return position"""
         async with self._lock:
             
             queue_item = QueueItem(
                 user_id=user_id,
                 username=username,
-                chat_id=chat_id,
-                message_id=message_id,
                 bot_reply_message_id=bot_reply_message_id,
                 pack_input=pack_input,
                 sticker_set=sticker_set,
                 estimated_seconds=estimated_seconds,
                 log_id=log_id,
                 timestamp=datetime.now(),
-                is_premium=is_premium
+                is_premium=is_premium,
+                event=event,
+                is_cache_suspicious=is_cache_suspicious
+                
             )
 
             # Add to the user specific tracking list
@@ -94,6 +97,14 @@ class QueueManager:
                 logger.info(f"User {user_id} cancelled item with log_id {log_id}")
                 return True
         return False
+
+
+    def get_processing_set_id(self) -> Optional[int]:
+        """Returns the set_id of the item currently being processed, or None."""
+        if self.processing:
+            return self.processing.sticker_set.set.id
+        return None
+    
     
     async def get_next_item(self) -> Optional[QueueItem]:
         """Get next item to process"""

@@ -14,10 +14,11 @@ import regex
 
 def ensure_directories():
     """Create necessary directories if they don't exist"""
-    from config import TEMP_DIR, OUTPUT_DIR
+    from config import TEMP_DIR, OUTPUT_DIR, CACHE_DIR
     
     os.makedirs(TEMP_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(CACHE_DIR, exist_ok=True)
 
 def extract_pack_name_from_url(url: str) -> Optional[str]:
     """Extract sticker/emoji pack name from Telegram URL"""
