@@ -198,8 +198,9 @@ class BotHandlers:
     async def _premium_users_cleanup_loop(self, check_interval_seconds: int = 86400):
         """Periodically cleans up expired premium users from the database."""
         # wait a bit on startup to ensure everything is connected and ready
-        await asyncio.sleep(60) 
         while True:
+            # Wait for the next interval
+            await asyncio.sleep(check_interval_seconds)
             try:
                 logger.info("Running scheduled cleanup of expired premium users...")
                 removed_count = db.remove_expired_premium_users()
@@ -210,8 +211,6 @@ class BotHandlers:
             except Exception as e:
                 logger.error(f"FATAL: The _premium_users_cleanup_loop crashed: {e}", exc_info=True)
             
-            # Wait for the next interval
-            await asyncio.sleep(check_interval_seconds)
 
 
     # helpers for safe access to user_states

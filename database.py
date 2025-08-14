@@ -248,7 +248,7 @@ def add_or_update_user(user_id: int, username: Optional[str], full_name: str):
             # New user
             cursor.execute(
                 "INSERT INTO users (user_id, username, first_seen) VALUES (?, ?, ?)",
-                (user_id, username, datetime.now())
+                (user_id, username, datetime.now().replace(microsecond=0))
             )
             # Initialize their stats
             cursor.execute(
@@ -315,7 +315,7 @@ def get_gstats() -> dict:
         cursor.execute("SELECT COUNT(*) FROM banned_users")
         total_banned = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM premium_users WHERE expiry_date > ?", (datetime.now(),))
+        cursor.execute("SELECT COUNT(*) FROM premium_users WHERE expiry_date > ?", (datetime.now().replace(microsecond=0),))
         active_premium = cursor.fetchone()[0]
         
         cursor.execute("SELECT SUM(succeeded_requests), SUM(failed_requests) FROM user_stats")
@@ -344,7 +344,7 @@ def get_gstats_premium_list() -> list:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT user_id, username, expiry_date FROM premium_users WHERE expiry_date > ? ORDER BY expiry_date ASC",
-            (datetime.now(),)
+            (datetime.now().replace(microsecond=0),)
         )
         return cursor.fetchall()
 
@@ -380,7 +380,7 @@ def log_conversion_request(user_id: int, pack_url: str, is_emoji: bool) -> int:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO conversion_log (user_id, pack_url, is_emoji, status, request_time) VALUES (?, ?, ?, ?, ?)",
-            (user_id, pack_url, is_emoji, "processing", datetime.now())
+            (user_id, pack_url, is_emoji, "processing", datetime.now().replace(microsecond=0))
         )
         conn.commit()
         return cursor.lastrowid
@@ -392,7 +392,7 @@ def update_conversion_log(log_id: int, status: str, completion_time: datetime, d
         # First update the detailed log
         cursor.execute(
             "UPDATE conversion_log SET status = ?, completion_time = ?, duration_seconds = ? WHERE log_id = ?",
-            (status, completion_time, duration, log_id)
+            (status, completion_time, round(duration, 2), log_id)
         )
         
         # Update the stats table
@@ -432,7 +432,7 @@ def is_premium(user_id: int) -> bool:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT expiry_date FROM premium_users WHERE user_id = ? AND expiry_date > ?",
-            (user_id, datetime.now())
+            (user_id, datetime.now().replace(microsecond=0))
         )
         return cursor.fetchone() is not None
 
@@ -442,11 +442,11 @@ def add_admin(user_id: int, username: str, promoted_by: int):
     with get_db_connection() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO admins (user_id, username, promoted_by, promotion_date) VALUES (?, ?, ?, ?)",
-            (user_id, username, promoted_by, datetime.now())
+            (user_id, username, promoted_by, datetime.now().replace(microsecond=0))
         )
         conn.execute(
             "INSERT INTO admin_history (admin_id, target_user_id, action, timestamp) VALUES (?, ?, ?, ?)",
-            (promoted_by, user_id, 'promoted', datetime.now())
+            (promoted_by, user_id, 'promoted', datetime.now().replace(microsecond=0))
         )
         conn.commit()
 
@@ -458,7 +458,7 @@ def remove_admin(user_id: int, demoted_by: int) -> bool:
         if cursor.rowcount > 0:
             conn.execute(
                 "INSERT INTO admin_history (admin_id, target_user_id, action, timestamp) VALUES (?, ?, ?, ?)",
-                (demoted_by, user_id, 'demoted', datetime.now())
+                (demoted_by, user_id, 'demoted', datetime.now().replace(microsecond=0))
             )
             conn.commit()
             return True
@@ -468,7 +468,7 @@ def remove_admin(user_id: int, demoted_by: int) -> bool:
 
 def add_premium(user_id: int, username: str, duration_days: int, added_by: int):
     """Adds or extends a user's premium subscription."""
-    now = datetime.now()
+    now = datetime.now().replace(microsecond=0)
     expiry_date = now + timedelta(days=duration_days)
     with get_db_connection() as conn:
         conn.execute(
@@ -496,7 +496,7 @@ def remove_premium(user_id: int, admin_id: int) -> bool:
             # Log the removal action
             conn.execute(
                 "INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days, previous_expiry_date, new_expiry_date, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (admin_id, user_id, 'removed', None, previous_expiry, None, datetime.now())
+                (admin_id, user_id, 'removed', None, previous_expiry, None, datetime.now().replace(microsecond=0))
             )
             conn.commit()
             return True
@@ -511,12 +511,12 @@ def get_premium_duration_left(user_id: int) -> Optional[timedelta]:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT expiry_date FROM premium_users WHERE user_id = ? AND expiry_date > ?",
-            (user_id, datetime.now())
+            (user_id, datetime.now().replace(microsecond=0))
         )
         result = cursor.fetchone()
         if result:
             expiry_date = result['expiry_date']
-            return expiry_date - datetime.now()
+            return expiry_date - datetime.now().replace(microsecond=0)
     return None
 
 def manage_premium_duration(user_id: int, days: int, admin_id: int, action: str) -> Optional[datetime]:
@@ -538,7 +538,7 @@ def manage_premium_duration(user_id: int, days: int, admin_id: int, action: str)
         # Log this action to history
         conn.execute(
             "INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days, previous_expiry_date, new_expiry_date, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (admin_id, user_id, action, days, current_expiry, new_expiry, datetime.now())
+            (admin_id, user_id, action, days, current_expiry, new_expiry, datetime.now().replace(microsecond=0))
         )
         conn.commit()
 
@@ -550,7 +550,7 @@ def remove_expired_premium_users() -> int:
     Logs the removal to the premium_history table as an 'expired' action.
     Returns the number of users removed.
     """
-    now = datetime.now()
+    now = datetime.now().replace(microsecond=0)
     system_admin_id = 0 # Using 0 as a special ID for automated system actions
 
     with get_db_connection() as conn:
@@ -602,7 +602,7 @@ def is_banned(user_id: int) -> bool:
 
 def ban_user(user_id: int, admin_id: int, reason: Optional[str], is_silent: bool):
     """Adds a user to the banned_users table and logs it to history."""
-    now = datetime.now()
+    now = datetime.now().replace(microsecond=0)
     with get_db_connection() as conn:
         # Add to currently banned table
         conn.execute(
@@ -626,7 +626,7 @@ def unban_user(user_id: int, admin_id: int, reason: Optional[str]) -> bool:
         if cursor.rowcount > 0:
             conn.execute(
                 "INSERT INTO ban_history (target_user_id, admin_id, action, reason, timestamp) VALUES (?, ?, ?, ?, ?)",
-                (user_id, admin_id, 'unbanned', reason, datetime.now())
+                (user_id, admin_id, 'unbanned', reason, datetime.now().replace(microsecond=0))
             )
             conn.commit()
             return True
@@ -640,7 +640,7 @@ def log_contact_message(user_id: int, user_message_id: int, message_text: str) -
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO contact_messages (user_id, user_message_id, user_message_text, timestamp_sent) VALUES (?, ?, ?, ?)",
-            (user_id, user_message_id, message_text, datetime.now())
+            (user_id, user_message_id, message_text, datetime.now().replace(microsecond=0))
         )
         conn.commit()
         logger.info(f"Logged new contact message from user {user_id}. contact_id: {cursor.lastrowid}")
@@ -652,7 +652,7 @@ def log_admin_reply(contact_id: int, admin_id: int, admin_reply_message_id: int,
         # Add the new reply to the replies table
         conn.execute(
             "INSERT INTO admin_replies (contact_id, admin_id, admin_reply_message_id, admin_reply_text, timestamp_replied) VALUES (?, ?, ?, ?, ?)",
-            (contact_id, admin_id, admin_reply_message_id, reply_text, datetime.now())
+            (contact_id, admin_id, admin_reply_message_id, reply_text, datetime.now().replace(microsecond=0))
         )
         # Mark the original message as 'replied'
         conn.execute(
@@ -720,7 +720,7 @@ def log_broadcast(admin_id: int, message_content: str, flags: str,
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (admin_id, datetime.now(), message_content, flags, total_users,
+            (admin_id, datetime.now().replace(microsecond=0), message_content, flags, total_users,
              success_count, fail_count, is_forward, forwarded_from_id,
              forwarded_message_id)
         )
@@ -743,7 +743,7 @@ def log_send(admin_id: int, message_content: str, flags: str,
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (admin_id, datetime.now(), message_content, flags, json.dumps(target_users_list),
+            (admin_id, datetime.now().replace(microsecond=0), message_content, flags, json.dumps(target_users_list),
              len(target_users_list), success_count, fail_count, is_forward, forwarded_from_id,
              forwarded_message_id)
         )
@@ -784,8 +784,8 @@ def add_or_update_sticker_set_stats(set_id: int, short_name: str, is_emoji: bool
                 last_conversion_duration = excluded.last_conversion_duration,
                 cache_score = ?,
                 last_updated = excluded.last_updated
-        """, (set_id, short_name, is_emoji, pack_title, sticker_count, conversion_duration,
-               cache_score, datetime.now(), is_system_process, cache_score))
+        """, (set_id, short_name, is_emoji, pack_title, sticker_count, round(conversion_duration, 2),
+               round(cache_score, 2), datetime.now().replace(microsecond=0), is_system_process, round(cache_score, 2)))
         
         conn.commit()
         
@@ -869,7 +869,7 @@ def add_to_cache(set_id: int, cache_score: float, files_path: str):
     with get_db_connection() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO cached_packs (set_id, cache_score, cached_at, files_path) VALUES (?, ?, ?, ?)",
-            (set_id, cache_score, datetime.now(), files_path)
+            (set_id, round(cache_score, 2), datetime.now().replace(microsecond=0), files_path)
         )
         conn.commit()
         logger.info(f"Added pack {set_id} to cache with score {cache_score:.2f}")
