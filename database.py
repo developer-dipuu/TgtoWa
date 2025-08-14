@@ -753,7 +753,7 @@ def log_send(admin_id: int, message_content: str, flags: str,
 
 ############### Sticker Pack Stats & Caching #################
 
-def add_or_update_sticker_set_stats(set_id: int, short_name: str, is_emoji: bool, pack_title: str, sticker_count: int, conversion_duration: float) -> float:
+def add_or_update_sticker_set_stats(set_id: int, short_name: str, is_emoji: bool, pack_title: str, sticker_count: int, conversion_duration: float, is_system_process: bool) -> float:
     """
     Adds or updates a sticker pack's stats after a conversion.
     Calculates and returns the new cache score.
@@ -768,24 +768,24 @@ def add_or_update_sticker_set_stats(set_id: int, short_name: str, is_emoji: bool
         stat = cursor.fetchone()
         
         current_request_count = stat['request_count'] if stat else 0
-        new_request_count = current_request_count + 1
-        
+        new_request_count = current_request_count if is_system_process else current_request_count + 1
         # Calculate the cache score
         cache_score = (CACHE_SCORE_TIME_WEIGHT * conversion_duration) + (CACHE_SCORE_REQUEST_WEIGHT * new_request_count)
         
         # Use INSERT ON CONFLICT to either create a new record or update an existing one
-        cursor.execute("""
+        cursor.execute(f"""
             INSERT INTO sticker_set_stats (set_id, short_name, is_emoji, pack_title, sticker_count, last_conversion_duration, cache_score, last_updated)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(set_id) DO UPDATE SET
                 pack_title = excluded.pack_title,
                 short_name = excluded.short_name,
                 sticker_count = excluded.sticker_count,
-                request_count = request_count + 1,
+                request_count = CASE WHEN ? THEN request_count ELSE request_count + 1 END,
                 last_conversion_duration = excluded.last_conversion_duration,
                 cache_score = ?,
                 last_updated = excluded.last_updated
-        """, (set_id, short_name, is_emoji, pack_title, sticker_count, conversion_duration, cache_score, datetime.now(), cache_score))
+        """, (set_id, short_name, is_emoji, pack_title, sticker_count, conversion_duration,
+               cache_score, datetime.now(), is_system_process, cache_score))
         
         conn.commit()
         
@@ -841,7 +841,8 @@ def is_pack_cached(set_id: int, current_title: str, current_sticker_count: int) 
                 is_emoji=pack_info['is_emoji'],
                 pack_title=current_title,
                 sticker_count=current_sticker_count,
-                conversion_duration=pack_info['last_conversion_duration']
+                conversion_duration=pack_info['last_conversion_duration'],
+                is_system_process=False
             )
         logger.info(f"Cache hit for pack {set_id} at '{files_path}'.")
         return 'hit', files_path
@@ -901,3 +902,15 @@ def get_cached_pack_by_id(set_id: int) -> Optional[sqlite3.Row]:
         cursor = conn.cursor()
         cursor.execute("SELECT files_path FROM cached_packs WHERE set_id = ?", (set_id,))
         return cursor.fetchone()
+    
+def get_top_packs_by_score(limit: int) -> List[sqlite3.Row]:
+    """Gets the top N sticker packs ordered by their cache score."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT short_name FROM sticker_set_stats ORDER BY cache_score DESC LIMIT ?",
+            (limit,)
+        )
+        #returns a list of shortname strings
+        return [row['short_name'] for row in cursor.fetchall()]
+

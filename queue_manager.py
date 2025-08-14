@@ -28,6 +28,7 @@ class QueueItem:
     priority: int
     event: events.NewMessage.Event
     is_cache_suspicious: bool = False
+    is_silent_mode: bool = False
     status: str = "waiting"  # waiting, processing, completed, error
 
 class QueueManager:
@@ -39,7 +40,7 @@ class QueueManager:
     
     async def add_to_queue(self, user_id: int, username: str, bot_reply_message_id: int, pack_input: Any,
                            sticker_set: Any, estimated_seconds: float, log_id: int, priority: int,
-                            event: events.NewMessage.Event, is_cache_suspicious: bool) -> int:
+                            event: events.NewMessage.Event, is_cache_suspicious: bool, is_silent_mode: bool = False) -> int:
         """Add user to queue and return position"""
         async with self._lock:
             
@@ -54,8 +55,8 @@ class QueueManager:
                 timestamp=datetime.now(),
                 priority=priority,
                 event=event,
-                is_cache_suspicious=is_cache_suspicious
-                
+                is_cache_suspicious=is_cache_suspicious,
+                is_silent_mode=is_silent_mode
             )
 
             # Add to the user specific tracking list
