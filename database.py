@@ -324,7 +324,7 @@ def get_gstats() -> dict:
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         cursor.execute("SELECT status, COUNT(*) FROM conversion_log WHERE request_time >= ? GROUP BY status", (today_start,))
         today_stats_raw = cursor.fetchall()
-        today_succeeded = sum(row[1] for row in today_stats_raw if row[0] == 'completed')
+        today_succeeded = sum(row[1] for row in today_stats_raw if row[0].startswith('completed'))
         today_failed = sum(row[1] for row in today_stats_raw if row[0].startswith('failed'))
         
         return {
