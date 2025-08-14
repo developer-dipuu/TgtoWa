@@ -8,7 +8,7 @@ API_ID = 12345678 #  Replace with your API ID (must)
 API_HASH = "" # Your API HASH (must)
 BOT_TOKEN = "" # Your bot token (must)
 
-OWNER_ID = 1234567890 #  Replace with your Telegram User ID (needed for approving admins and users)
+OWNER_ID = 1234567890 # Replace with your Telegram User ID (needed for approving admins and users)
 
 # ‼️ Must READ
 ''' Required channels to use this bot (leave empty if you don't want to force user to join)
