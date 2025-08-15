@@ -54,6 +54,7 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS conversion_log (
                     log_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
+                    set_id INTEGER NOT NULL, 
                     pack_url TEXT NOT NULL,
                     is_emoji BOOLEAN NOT NULL,
                     status TEXT NOT NULL,
@@ -263,8 +264,15 @@ def init_db():
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_user_stats_total_requests ON user_stats (total_requests)
             """)
-
-
+            # Speeds up the daily popular packs calculation
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversion_log_set_id ON conversion_log (set_id)
+            """)
+            # Speeds up fetching top users and all-time popular packs
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sticker_set_stats_request_count ON sticker_set_stats (request_count)
+            """)
+            
             conn.commit()
             logger.info("Database initialized successfully.")
     except sqlite3.Error as e:
@@ -409,13 +417,13 @@ def get_gstats_banned_list() -> list:
     
     
 # Conversion Logging
-def log_conversion_request(user_id: int, pack_url: str, is_emoji: bool) -> int:
+def log_conversion_request(user_id: int, set_id: int, pack_url: str, is_emoji: bool) -> int:
     """Logs the start of a conversion request and returns the log ID."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO conversion_log (user_id, pack_url, is_emoji, status, request_time) VALUES (?, ?, ?, ?, ?)",
-            (user_id, pack_url, is_emoji, "processing", datetime.now().replace(microsecond=0))
+            "INSERT INTO conversion_log (user_id, set_id, pack_url, is_emoji, status, request_time) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, set_id, pack_url, is_emoji, "processing", datetime.now().replace(microsecond=0))
         )
         conn.commit()
         return cursor.lastrowid
@@ -971,11 +979,11 @@ def calculate_and_store_popular_packs():
                 SELECT
                     sss.pack_title,
                     cl.pack_url,
-                    COUNT(cl.pack_url) as request_count
+                    COUNT(cl.set_id) as request_count
                 FROM conversion_log cl
-                JOIN sticker_set_stats sss ON cl.pack_url LIKE '%' || sss.short_name
+                JOIN sticker_set_stats sss ON cl.set_id = sss.set_id
                 WHERE cl.request_time >= ? AND cl.request_time < ?
-                GROUP BY cl.pack_url, sss.pack_title
+                GROUP BY cl.set_id
                 ORDER BY request_count DESC
                 LIMIT 10;
             """

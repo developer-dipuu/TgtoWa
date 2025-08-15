@@ -356,7 +356,7 @@ class BotHandlers:
                     pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
                     pack_url = f"https://t.me/{pack_type_url}/{sticker_set.set.short_name}"
                     if log_id is None:
-                        log_id = db.log_conversion_request(user_id, pack_url, is_emoji_pack)
+                        log_id = db.log_conversion_request(user_id, sticker_set.set.id, pack_url, is_emoji_pack)
                     
                     await event.reply(f"✅ Found this pack in the cache! Sending **{num_packs}** file(s) instantly...")
                     status = "completed_from_cache"
@@ -543,7 +543,7 @@ class BotHandlers:
         pack_url = f"https://t.me/{pack_type_url}/{sticker_set.set.short_name}"
 
         # Log the request to the database
-        log_id = db.log_conversion_request(user.id, pack_url, is_emoji_pack)
+        log_id = db.log_conversion_request(user.id, sticker_set.set.id, pack_url, is_emoji_pack)
 
         # send adding to queue message
         placeholder_message = await event.reply("⌛ Adding to the queue...")
@@ -1762,7 +1762,7 @@ class BotHandlers:
                 estimated_seconds = estimate_wait_time(sticker_set.documents, None)
                 is_emoji = sticker_set.set.emojis
                 pack_url = f"https://t.me/add{'emoji' if is_emoji else 'stickers'}/{short_name}"
-                log_id = db.log_conversion_request(system_id, pack_url, is_emoji)
+                log_id = db.log_conversion_request(system_id, sticker_set.set.id, pack_url, is_emoji)
                 
                 await queue_manager.add_to_queue(
                     user_id=system_id, username="System Refresh", bot_reply_message_id=original_event.id,
