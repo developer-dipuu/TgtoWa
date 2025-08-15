@@ -224,9 +224,44 @@ def init_db():
                 )
             """)
 
-            # Add an index for faster cache score lookups
+            # For storing pre-calculated popular packs
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS popular_packs (
+                    list_type TEXT NOT NULL, -- 'daily' or 'all_time'
+                    rank INTEGER NOT NULL,
+                    pack_title TEXT NOT NULL,
+                    pack_url TEXT NOT NULL,
+                    last_updated TIMESTAMP NOT NULL,
+                    PRIMARY KEY (list_type, rank)
+                )
+            """)
+
+            # ---- Indexes for fast lookups ----
+
+            # For faster cache score lookups (for replacing cache and all)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_cached_packs_score ON cached_packs (cache_score)
+            """)
+            
+            # Speeds up the daily premium user cleanup job and /gstats list
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_premium_users_expiry_date ON premium_users (expiry_date)
+            """)
+            # Speeds up /refreshcache by quickly sorting all packs
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sticker_set_stats_cache_score ON sticker_set_stats (cache_score)
+            """)
+            # Speeds up the daily stats calculation for /gstats (this is must as the conversion_log will get damn large)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversion_log_request_time ON conversion_log (request_time)
+            """)
+            # Speeds up fetching admin reply history
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_admin_replies_contact_id ON admin_replies (contact_id)
+            """)
+            # Speeds up fetching the top users list in /gstats (i do this damn often so bettr have this)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_stats_total_requests ON user_stats (total_requests)
             """)
 
 
@@ -392,7 +427,7 @@ def update_conversion_log(log_id: int, status: str, completion_time: datetime, d
         # First update the detailed log
         cursor.execute(
             "UPDATE conversion_log SET status = ?, completion_time = ?, duration_seconds = ? WHERE log_id = ?",
-            (status, completion_time, round(duration, 2), log_id)
+            (status, completion_time.replace(microsecond=0), round(duration, 2), log_id)
         )
         
         # Update the stats table
@@ -914,3 +949,78 @@ def get_top_packs_by_score(limit: int) -> List[sqlite3.Row]:
         #returns a list of shortname strings
         return [row['short_name'] for row in cursor.fetchall()]
 
+def calculate_and_store_popular_packs():
+    """
+    Calculates the top 10 daily and top 50 all-time packs and stores them.
+    This is intended to be run once daily.
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Start fresh
+            cursor.execute("DELETE FROM popular_packs")
+
+            # --- Calculate Daily Top 10 (from yesterday's data) ---
+            now = datetime.now()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            yesterday_start = today_start - timedelta(days=1)
+            
+            # This query joins conversion logs with pack stats to get titles
+            daily_query = """
+                SELECT
+                    sss.pack_title,
+                    cl.pack_url,
+                    COUNT(cl.pack_url) as request_count
+                FROM conversion_log cl
+                JOIN sticker_set_stats sss ON cl.pack_url LIKE '%' || sss.short_name
+                WHERE cl.request_time >= ? AND cl.request_time < ?
+                GROUP BY cl.pack_url, sss.pack_title
+                ORDER BY request_count DESC
+                LIMIT 10;
+            """
+            cursor.execute(daily_query, (yesterday_start, today_start))
+            daily_packs = cursor.fetchall()
+
+            daily_inserts = []
+            for i, pack in enumerate(daily_packs, 1):
+                daily_inserts.append(('daily', i, pack['pack_title'], pack['pack_url'], now))
+            
+            cursor.executemany(
+                "INSERT INTO popular_packs (list_type, rank, pack_title, pack_url, last_updated) VALUES (?, ?, ?, ?, ?)",
+                daily_inserts
+            )
+
+            # --- Calculate All-Time Top 50 ---
+            all_time_query = """
+                SELECT pack_title, short_name, is_emoji FROM sticker_set_stats ORDER BY request_count DESC LIMIT 50
+            """
+            cursor.execute(all_time_query)
+            all_time_packs = cursor.fetchall()
+            
+            all_time_inserts = []
+            for i, pack in enumerate(all_time_packs, 1):
+                pack_type_url = "addemoji" if pack['is_emoji'] else "addstickers"
+                pack_url = f"https://t.me/{pack_type_url}/{pack['short_name']}"
+                all_time_inserts.append(('all_time', i, pack['pack_title'], pack_url, now))
+
+            cursor.executemany(
+                "INSERT INTO popular_packs (list_type, rank, pack_title, pack_url, last_updated) VALUES (?, ?, ?, ?, ?)",
+                all_time_inserts
+            )
+            
+            conn.commit()
+
+    except Exception as e:
+        logger.error(f"FATAL: The calculate_and_store_popular_packs job crashed: {e}", exc_info=True)
+
+
+def get_popular_packs(list_type: str) -> List[sqlite3.Row]:
+    """Retrieves a pre-calculated list of popular packs."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT pack_title, pack_url FROM popular_packs WHERE list_type = ? ORDER BY rank ASC",
+            (list_type,)
+        )
+        return cursor.fetchall()

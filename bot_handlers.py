@@ -10,7 +10,7 @@ import zipfile
 import asyncio
 import logging
 import re
-import json
+import html
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, Button
 from telethon.errors.rpcerrorlist import UserNotParticipantError
@@ -47,6 +47,8 @@ class BotHandlers:
         self.pending_actions = {}
         self.active_refresh_jobs = set()
         self.active_refresh_message = None
+        self.daily_popular_packs = []
+        self.all_time_popular_packs = []
         # formatted start message
         self.START_MESSAGE = START_MESSAGE_FORMAT.format(
             bot_username=self.bot_username,
@@ -55,6 +57,7 @@ class BotHandlers:
         asyncio.create_task(self._reply_locks_cleanup_loop(ttl_seconds=3600))
         asyncio.create_task(self._user_states_cleanup_loop(ttl_confirm_seconds=3600, ttl_message_seconds=86400, check_interval_seconds=3600))
         asyncio.create_task(self._premium_users_cleanup_loop(check_interval_seconds=86400))
+        asyncio.create_task(self._calculate_popular_packs_loop())
 
         
         
@@ -79,6 +82,7 @@ class BotHandlers:
         self.client.add_event_handler(self.mystats_command, events.NewMessage(pattern='/mystats', func=lambda e: e.is_private))
         self.client.add_event_handler(self.premium_command, events.NewMessage(pattern='/premium', func=lambda e: e.is_private))
         self.client.add_event_handler(self.commands_command, events.NewMessage(pattern='/commands', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest', func=lambda e: e.is_private))
         # contact commands
         self.client.add_event_handler(self.contact_command, events.NewMessage(pattern='/contact', func=lambda e: e.is_private))
         self.client.add_event_handler(self.handle_user_contact_message, events.NewMessage(func=lambda e: e.is_private ))
@@ -197,7 +201,6 @@ class BotHandlers:
 
     async def _premium_users_cleanup_loop(self, check_interval_seconds: int = 86400):
         """Periodically cleans up expired premium users from the database."""
-        # wait a bit on startup to ensure everything is connected and ready
         while True:
             # Wait for the next interval
             await asyncio.sleep(check_interval_seconds)
@@ -210,7 +213,43 @@ class BotHandlers:
                     logger.info("No expired premium users found to remove.")
             except Exception as e:
                 logger.error(f"FATAL: The _premium_users_cleanup_loop crashed: {e}", exc_info=True)
-            
+
+    async def _refresh_popular_packs_cache(self):
+        """Fetches popular packs from DB and loads them into memory."""
+        try:
+            # Use to_thread since DB access can be blocking
+            self.daily_popular_packs = await asyncio.to_thread(db.get_popular_packs, 'daily')
+            self.all_time_popular_packs = await asyncio.to_thread(db.get_popular_packs, 'all_time')
+            logger.info(f"Popular packs refreshed. Loaded {len(self.daily_popular_packs)} daily and {len(self.all_time_popular_packs)} all-time packs.")
+        except Exception as e:
+            logger.error(f"Failed to refresh in-memory popular packs cache: {e}")
+
+
+    async def _calculate_popular_packs_loop(self):
+        """Periodically calculates and stores popular packs."""
+        # Run once on startup to ensure data is available immediately
+        try:
+            await asyncio.to_thread(db.calculate_and_store_popular_packs)
+            await self._refresh_popular_packs_cache()
+        except Exception as e:
+            logger.error(f"Initial popular packs calculation failed: {e}")
+
+        while True:
+            try:
+                now = datetime.now()
+                # Set next run for 1 minute past midnight to avoid any weird DST/edge case issues
+                next_run = (now + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+                sleep_seconds = (next_run - now).total_seconds()
+                
+                await asyncio.sleep(sleep_seconds)
+                
+                # Run the blocking DB function in a separate thread
+                await asyncio.to_thread(db.calculate_and_store_popular_packs)
+                await self._refresh_popular_packs_cache()
+                logger.info(f"Popular packs refreshed.")
+
+            except Exception as e:
+                logger.error(f"FATAL: The _calculate_popular_packs_loop crashed: {e}", exc_info=True)
 
 
     # helpers for safe access to user_states
@@ -322,8 +361,9 @@ class BotHandlers:
                     await event.reply(f"✅ Found this pack in the cache! Sending **{num_packs}** file(s) instantly...")
                     status = "completed_from_cache"
                     all_uploads_succeeded = True
+                    safe_title = html.escape(current_title)
                     for i, file_path in enumerate(wastickers_files):
-                        caption = f"📦 <a href=\"{pack_url}\">{current_title}</a> - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
+                        caption = f"📦 <a href=\"{pack_url}\">{safe_title}</a> - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
                         try:
                             await asyncio.wait_for(
                                 self.client.send_file(event.chat_id, file_path, caption=caption, link_preview=False, parse_mode='html'),
@@ -532,11 +572,12 @@ class BotHandlers:
         )
         # detailed added to queue successful message string
         if position != 1:
+            safe_pack_name = html.escape(pack_display_name)
             if is_premium:
                 current_queue_count = await queue_manager.get_user_queue_count(user.id)
                 slots_left = MAX_CONCURRENT_PREMIUM_REQUESTS - current_queue_count
                 final_message_text = (f"<b>⭐ VIP Status Confirmed!</b>\n\n"
-            f"Your pack: <b><a href=\"{pack_url}\">{pack_display_name}</a></b> has been fast-tracked to position <b>{position}</b>.\n")
+            f"Your pack: <b><a href=\"{pack_url}\">{safe_pack_name}</a></b> has been fast-tracked to position <b>{position}</b>.\n")
 
                 if slots_left > 0:
                     final_message_text += f"<blockquote>As a premium user, you can still add <b>{slots_left}</b> more pack(s) to the queue. Keep 'em coming!</blockquote>\n"
@@ -544,7 +585,7 @@ class BotHandlers:
                 final_message_text += "\n<b>I'll notify you when the conversion starts!</b>"
             else:
                 final_message_text = (f"<b>✅ Added to conversion queue!</b>\n\n"
-                f"📦 Pack: <a href=\"{pack_url}\">{pack_display_name}</a>\n📍 Position: {position}\n\n"
+                f"📦 Pack: <a href=\"{pack_url}\">{safe_pack_name}</a>\n📍 Position: {position}\n\n"
                 f"<blockquote>I'll notify you when the conversion starts!</blockquote>")
 
             # finally edit the message with detailed one
@@ -631,6 +672,7 @@ class BotHandlers:
         # sticker info
         sticker_set = item.sticker_set
         pack_title = sticker_set.set.title
+        safe_pack_title = html.escape(pack_title)
         total_stickers = len(sticker_set.documents)
         num_packs = (total_stickers + MAX_STICKERS_PER_PACK - 1) // MAX_STICKERS_PER_PACK
         pack_short_name = sticker_set.set.short_name
@@ -658,7 +700,7 @@ class BotHandlers:
             pack_url = f"https://t.me/{pack_type_url}/{pack_short_name}"
 
             message = (f"📊 <b>Pack Details:</b>\n"
-                    f"• Name: <a href=\"{pack_url}\">{pack_title}</a>\n"
+                    f"• Name: <a href=\"{pack_url}\">{safe_pack_title}</a>\n"
                     f"• Total {item_name}: {total_stickers}\n"
                     f"• This will create {num_packs} .wastickers file(s).")
             await self.client.send_message(item.event.chat_id, message, parse_mode='html', link_preview=False)
@@ -684,7 +726,7 @@ class BotHandlers:
 
         if not wastickers_files:
             if not is_silent_mode:
-                await self.client.send_message(item.event.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{pack_title}</a></b>. If the problem persists, ping us at **{SUPPORT_GROUP}**", link_preview=False, parse_mode='html')
+                await self.client.send_message(item.event.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{safe_pack_title}</a></b>. If the problem persists, ping us at **{SUPPORT_GROUP}**", link_preview=False, parse_mode='html')
             # This is a failure so we raise an exception.
             raise Exception("Wasticker file creation returned no files.")
 
@@ -715,7 +757,7 @@ class BotHandlers:
             await self.client.send_message(item.event.chat_id, f"✅ Conversion complete! Sending <b>{len(final_file_paths)}</b> file(s)...", link_preview=False, parse_mode='html')
             
             for i, file_path in enumerate(final_file_paths):
-                caption = f"📦 <a href=\"{pack_url}\">{pack_title}</a> - Part {i+1}/{len(final_file_paths)}\nSize: {format_file_size(os.path.getsize(file_path))}"
+                caption = f"📦 <a href=\"{pack_url}\">{safe_pack_title}</a> - Part {i+1}/{len(final_file_paths)}\nSize: {format_file_size(os.path.getsize(file_path))}"
                 try:
                     await asyncio.wait_for(
                         self.client.send_file(item.event.chat_id, file_path, caption=caption, link_preview=False, parse_mode='html'),
@@ -955,6 +997,39 @@ class BotHandlers:
         await event.reply(COMMANDS_MESSAGE, buttons=buttons, parse_mode='html')
         raise StopPropagation
     
+
+    def _format_suggestion_message(self, list_type: str) -> tuple[str, list]:
+        """Helper to generate the message text and buttons for suggestions."""
+        packs = self.daily_popular_packs if list_type == 'daily' else self.all_time_popular_packs
+        
+        if list_type == 'daily':
+            title = "📅 <b>Top 10 Popular Packs (Daily)</b>"
+            button = [Button.inline("🏆 View All-Time Top 50", b"suggest_all_time")]
+        else: # all_time
+            title = "🏆 <b>Top 50 Popular Packs (All-Time)</b>"
+            button = [Button.inline("📅 View Daily Top 10", b"suggest_daily")]
+        
+        if not packs:
+            message = f"{title}\n\n" \
+                      "Hmm, I don't have any data for this yet.\n " \
+                      "Check back tomorrow after more packs have been converted! 😊"
+        else:
+            pack_list = []
+            for i, pack in enumerate(packs, 1):
+                safe_title = html.escape(pack['pack_title'])
+                pack_list.append(f"{i}. <a href='{pack['pack_url']}'>{safe_title}</a>")
+            
+            message = f"{title}\n\n<b>{"\n".join(pack_list)}</b>"
+        
+        return message, [button]
+
+    @check_banned
+    async def suggest_command(self, event: events.NewMessage.Event):
+        """Handles the /suggest command."""
+        message, buttons = self._format_suggestion_message('daily')
+        await event.reply(message, buttons=buttons, parse_mode='html', link_preview=False)
+        raise StopPropagation
+
     @check_banned
     async def contact_command(self, event: events.NewMessage.Event):
         """Handles the /contact command, prompting the user to send a message."""
@@ -1013,7 +1088,7 @@ class BotHandlers:
 
         header_message = CONTACT_ADMIN_NOTIFICATION_HEADER.format(
             contact_id=contact_id,
-            user_display_name=user_display_name,
+            user_display_name=html.escape(user_display_name),
             user_id=user.id,
             role=role,
             succeeded=stats['succeeded'],
@@ -2181,11 +2256,13 @@ class BotHandlers:
             admin_reps = details['admin_replies']
             user_message_text = user_msg['user_message_text'] if len(user_msg['user_message_text']) <= 1000 else user_msg['user_message_text'][:994] + "......"
             sent_time = user_msg['timestamp_sent'].strftime('%Y-%m-%d %H:%M:%S')
+            safe_user_name = html.escape(user_msg['user_full_name'])
+            safe_user_message = html.escape(user_message_text)
             response_text = (
                 f"📖 <b>Contact Details for Ticket #{contact_id}</b>\n\n"
-                f"👤 <b>From User:</b> <code>{user_msg['user_id']}</code> ({user_msg['user_full_name']})\n"
+                f"👤 <b>From User:</b> <code>{user_msg['user_id']}</code> ({safe_user_name})\n"
                 f"⏰ <b>Query Sent:</b> <code>{sent_time}</code>\n"
-                f"💬 <b>Message:</b> <blockquote>{user_message_text}</blockquote>"
+                f"💬 <b>Message:</b> <blockquote>{safe_user_message}</blockquote>"
                 f"---"
             )
 
@@ -2201,11 +2278,13 @@ class BotHandlers:
                     reply_time = reply['timestamp_replied'].strftime('%H:%M:%S on %Y-%m-%d')
                     admin_name = reply['admin_full_name'][:20] or "N/A"
                     admin_reply_text = reply['admin_reply_text'] if len(reply['admin_reply_text']) <= 100 else reply['admin_reply_text'][0:96]+ "..."
+                    safe_admin_name = html.escape(admin_name)
+                    safe_admin_reply_text = html.escape(admin_reply_text)
                     response_text += (
                         f"\n\n↪️ <b>Reply #{i}</b>\n"
-                        f"  - <b>By Admin:</b> <code>{reply['admin_id']}</code> ({admin_name})\n"
+                        f"  - <b>By Admin:</b> <code>{reply['admin_id']}</code> ({safe_admin_name})\n"
                         f"  - <b>Replied at:</b> <code>{reply_time}</code>\n"
-                        f"  - <b>Reply:</b> <blockquote>{admin_reply_text}</blockquote>"
+                        f"  - <b>Reply:</b> <blockquote>{safe_admin_reply_text}</blockquote>"
                     )
             
             buttons = [[Button.inline("⬅️ Back", f"contact_back_{contact_id_str}_{admin_msg_id_str}")]]
@@ -2249,7 +2328,7 @@ class BotHandlers:
                 users = db.get_gstats_top_users()
                 content = ""
                 for i, user in enumerate(users, 1):
-                    content += f"{i}. <code>{user['user_id']}</code> ({user['full_name']}) - <b>{user['total_requests']}</b> requests\n"
+                    content += f"{i}. <code>{user['user_id']}</code> ({html.escape(user['full_name'])}) - <b>{user['total_requests']}</b> requests\n"
                 await self._gstats_send_list(event, "Top 50 Users by Requests", content, "top_users.txt")
 
             elif action == "admins":
@@ -2264,7 +2343,7 @@ class BotHandlers:
                 content = ""
                 for user in users:
                     ban_date = user['ban_date'].strftime('%Y-%m-%d')
-                    content += f"• <code>{user['user_id']}</code> - Banned on <code>{ban_date}</code>\n  Reason: {user['reason']}\n\n"
+                    content += f"• <code>{user['user_id']}</code> - Banned on <code>{ban_date}</code>\n  Reason: {html.escape(user['reason'])}\n\n"
                 await self._gstats_send_list(event, "Banned Users List", content, "banned_users.txt")
 
             elif action == "back":
@@ -2403,3 +2482,13 @@ class BotHandlers:
                 original_event = pending_action['original_event']
                 asyncio.create_task(self._execute_refresh_task(action_type, pending_action['payload'], original_event))
                 return
+            
+        elif data.startswith("suggest_"):
+            await event.answer()
+            list_type = data.split('_', 1)[1] # 'daily' or 'all_time'
+            
+            try:
+                message, buttons = self._format_suggestion_message(list_type)
+                await event.edit(message, buttons=buttons, parse_mode='html', link_preview=False)
+            except Exception as e:
+                logger.warning(f"Could not edit the suggest message: {e}")

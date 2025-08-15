@@ -1,3 +1,4 @@
+import html
 """
 Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
 """
@@ -67,7 +68,7 @@ REQUIRED_CHANNELS_FORMATTED = [
 ]
 
 # Channel list converted to string 
-_channel_list_str = "\n".join([f"• <b><a href=\"{channel[1]}\">{channel[0]}</a></b>" for channel in REQUIRED_CHANNELS_FORMATTED])
+_channel_list_str = "\n".join([f"• <b><a href=\"{channel[1]}\">{html.escape(channel[0])}</a></b>" for channel in REQUIRED_CHANNELS_FORMATTED])
 
 
 
@@ -159,6 +160,8 @@ COMMANDS_MESSAGE = """
 • /queue - 📊 Checks your current position in the conversion queue.
 • /mystats - 📈 Shows your usage statistics and current role.
 • /premium - ⭐ Displays your premium status and its benefits.
+• /commands - ⚙️ Shows a list of Available Commands
+• /suggest - ✨ Get recommendations for popular packs.
 • /contact - 📨 Send a message to the bot administrators.
 
 Just send any of these commands to get started!
