@@ -5,13 +5,12 @@ Sticker and emoji conversion functionality for Telegram to WhatsApp converter
 import os
 import zipfile
 import asyncio
-from typing import List, Optional, Any
+from typing import List, Optional
 from PIL import Image
 import logging
 from telethon import TelegramClient
-from telethon.tl.functions.messages import GetStickerSetRequest
-from telethon.tl.types import InputStickerSetShortName, InputStickerSetID, Document
-from telethon.errors.rpcerrorlist import StickersetInvalidError
+from telethon.tl.types import Document
+
 from tgs_to_webp import convert_tgs_to_webp
 from video_to_webp import convert_video_to_webp
 from config import *
@@ -22,70 +21,7 @@ logger = logging.getLogger(__name__)
 class StickerConverter:
     def __init__(self, client: TelegramClient):
         self.client = client
-    
-    # to get the sticker object (information, its not downloading the pack), it is called in the handle_message
-    async def get_sticker_set(self, pack_input: Any):
-        """
-        Get sticker/emoji set from Telegram using either a short name (str) 
-        or a concrete InputStickerSet type (like InputStickerSetID).
-        """
-        try:
-            input_set = None
-            if isinstance(pack_input, str):
-                # If we get a string, we assume it's a short_name
-                input_set = InputStickerSetShortName(short_name=pack_input)
-            elif isinstance(pack_input, (InputStickerSetID, InputStickerSetShortName)):
-                # If we get a valid InputStickerSet object, use it directly
-                input_set = pack_input
-            else:
-                logger.error(f"Invalid type provided for pack: {type(pack_input)}")
-                return None
-
-            sticker_set = await self.client(GetStickerSetRequest(
-                stickerset=input_set,
-                hash=0
-            ))
-            return sticker_set
-        except StickersetInvalidError:
-            logger.error(f"The set '{pack_input}' is invalid or does not exist.")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get set {pack_input}: {e}")
-            return None
-        
- 
-    async def download_sticker(self, sticker: Document, temp_dir: str) -> Optional[str]:
-        """
-        Download a single sticker or emoji file with a retry mechanism.
-        """
-        file_path = os.path.join(temp_dir, f"sticker_{sticker.id}")
-        max_retries = MAX_DOWNLOAD_RETRIES
-        
-        for attempt in range(max_retries):
-            try:
-                downloaded_path = await asyncio.wait_for(
-                    self.client.download_media(sticker, file=file_path),
-                    timeout=DOWNLOAD_TIMEOUT
-                )
-                if downloaded_path:
-                    logger.info(f"Successfully downloaded item {sticker.id} to {downloaded_path} on attempt {attempt + 1}")
-                    return downloaded_path
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout on attempt {attempt + 1}/{max_retries} while downloading sticker {sticker.id}.")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2 * (attempt + 1))  # Wait 2, 4 seconds before retrying
-                else:
-                    logger.error(f"Failed to download sticker {sticker.id} after {max_retries} attempts due to timeout.")
-                    return None
-            except Exception as e:
-                logger.error(f"Failed to download item {sticker.id} on attempt {attempt + 1} with error: {e}")
-                if attempt < max_retries - 1:
-                     await asyncio.sleep(1) # 1 sec wait for other error 
-                else:
-                    logger.error(f"All {max_retries} retries failed for sticker {sticker.id}.")
-                    return None
-        return None
-        
+        self.network_task = NetworkTask(self.client)
 
     def _process_static_image(self,input_path, output_path):
         """Helper function to run PIL operations in a separate thread."""
@@ -167,7 +103,7 @@ class StickerConverter:
         os.makedirs(pack_temp_dir, exist_ok=True)
         
         try:
-            download_tasks = [self.download_sticker(sticker, pack_temp_dir) for sticker in stickers]
+            download_tasks = [self.network_task.download_sticker(sticker, pack_temp_dir) for sticker in stickers]
             downloaded_sticker_paths = await asyncio.gather(*download_tasks)
 
             converted_stickers = []

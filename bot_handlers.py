@@ -4,7 +4,6 @@ Telegram bot handlers for the TG Sticker/Emoji to WA Sticker Converter Bot
 
 import os 
 import glob
-import shutil
 import time
 import zipfile
 import asyncio
@@ -13,12 +12,13 @@ import re
 import html
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, Button
+from telethon.errors import UserIsBlockedError, ChatAdminRequiredError
+
 from telethon.errors.rpcerrorlist import UserNotParticipantError
 from telethon.events import StopPropagation
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import DocumentAttributeSticker, DocumentAttributeCustomEmoji, Message
 from typing import Optional
-from types import SimpleNamespace
 
 from config import *
 from utils import *
@@ -36,6 +36,7 @@ class BotHandlers:
         """
         ensure_directories()
         self.client = client
+        self.network_task = NetworkTask(self.client)
         self.converter = StickerConverter(self.client)
         self.processing_lock = asyncio.Lock()
         self.bot_username = f"@{bot_info.username}"
@@ -47,6 +48,8 @@ class BotHandlers:
         self.pending_actions = {}
         self.active_refresh_jobs = set()
         self.active_refresh_message = None
+        self.active_add_jobs = set()
+        self.active_add_message = None
         self.daily_popular_packs = []
         self.all_time_popular_packs = []
         # formatted start message
@@ -100,6 +103,9 @@ class BotHandlers:
         self.client.add_event_handler(self.clearcache_command, events.NewMessage(pattern=r'/clearcache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.refreshcache_command, events.NewMessage(pattern=r'/refreshcache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.cancelrefresh_command, events.NewMessage(pattern=r'/cancelrefresh', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.addcache_command, events.NewMessage(pattern=r'/addcache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.canceladdcache_command, events.NewMessage(pattern=r'/canceladdcache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.done_command, events.NewMessage(pattern=r'/done', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         # Premium commands (admin use)
         self.client.add_event_handler(self.add_premium_command, events.NewMessage(pattern=r'/addpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.remove_premium_command, events.NewMessage(pattern=r'/removepremium(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
@@ -266,6 +272,54 @@ class BotHandlers:
         async with self.user_states_lock:
             return self.user_states.pop(user_id, None)
 
+    async def delete_cache(self, set_id):
+        position = db.remove_from_cache(set_id) 
+        if position:
+            channel_id, message_ids = position
+            try:
+                await self.client.delete_messages(channel_id, message_ids)
+            except ChatAdminRequiredError:
+                logger.error(f"Can't delete messages! Bot is not an admin or doesn't have reqired permissions in the channel {channel_id}!")
+                return False
+            except Exception as e:
+                logger.error(f"Could not delete messages {message_ids} in the channel {channel_id}. An error has occured: {e}")
+                return False
+        else:
+            return None
+        return True
+    
+    async def delete_multiple_cache(self, set_ids):
+        messages_to_delete = {} # {channel1: [msg4,msg5,msg6], channel2: [msg10,msg11,msg12] }
+
+        for set_id in set_ids:
+            position = db.remove_from_cache(set_id)
+            if position:
+                channel_id, message_ids = position
+                messages_to_delete.setdefault(channel_id, []).extend(message_ids)
+
+        if not messages_to_delete:
+            return None
+        
+        status = True
+        while messages_to_delete:
+            channel = list(messages_to_delete.keys())[0] # first key
+            message_chunk = messages_to_delete.get(channel)[0:100] # collect upto 100 messages for a single channel
+            messages_to_delete[channel] = messages_to_delete.get(channel)[100:] # removed the collected messages
+
+            if not messages_to_delete.get(channel): # if all messages are collected for that cahnnel remove it from the dic
+                messages_to_delete.pop(channel)
+
+            try:
+                await self.client.delete_messages(channel, message_chunk)
+            except ChatAdminRequiredError:
+                logger.error(f"Can't delete messages! Bot is not an admin or doesn't have reqired permissions in the channel {channel_id}!")
+                status = False
+            except Exception as e:
+                logger.error(f"Could not delete messages {message_ids} in the channel {channel_id}. An error has occured: {e}")
+                status = False
+            await asyncio.sleep(1)
+
+        return status
 
     async def check_user_membership(self, user_id: int) -> bool:
         """Check if user is a member of required channels."""
@@ -298,38 +352,6 @@ class BotHandlers:
             logger.error(f"General error in check_user_membership for user {user_id}: {e}")
             return False
 
-    async def _notify_owner_of_failure(self, item, error_type: str, error_message: str):
-        """Sends a detailed failure notification to the bot owner."""
-        try:
-            user_display_name = item.username
-            user_id = item.user_id
-            log_id = item.log_id
-            
-            # Reconstruct the pack URL for easy checking
-            pack_url = "N/A"
-            if item.sticker_set and item.sticker_set.set:
-                is_emoji = item.sticker_set.set.emojis
-                pack_type = "addemoji" if is_emoji else "addstickers"
-                pack_url = f"https://t.me/{pack_type}/{item.sticker_set.set.short_name}"
-
-            message = (
-                f"🚨 **Conversion Failure Notification** 🚨\n\n"
-                f"A conversion has failed. Here are the details:\n\n"
-                f"👤 **User:** {user_display_name} (`{user_id}`)\n"
-                f"📦 **Pack URL:** **[Click Here]({pack_url})**\n"
-                f"📄 **Log ID:** `{log_id}`\n"
-                f"🛑 **Error Type:** `{error_type}`\n"
-                f"🗒️ **Error Details:**\n"
-                f"```\n{error_message}\n```\n\n"
-                f"The failure has been logged to the database."
-            )
-
-            await self.client.send_message(OWNER_ID, message, link_preview=False)
-            logger.info(f"Sent failure notification to owner for log_id {log_id}")
-
-        except Exception as e:
-            logger.error(f"CRITICAL: Failed to send failure notification to owner for log_id {log_id}: {e}")
-
     async def check_cache(self, event, sticker_set, log_id: Optional[int] = None) -> bool:
         """Checks if the sticker set is cached or not if cached it will directly send those files and return True,
         else it will handle cache inconsistencies if any and return False"""
@@ -339,85 +361,55 @@ class BotHandlers:
         current_sticker_count = len(sticker_set.documents)
 
         # Check if the pack is cached and up-to-date
-        cache_status, cache_data = db.is_pack_cached(set_id, current_title, current_sticker_count)
+        cache_status, channel_id, message_ids = db.is_pack_cached(set_id, current_title, current_sticker_count)
         
         # --- hehe cache hit ---
         if cache_status == 'hit':
-            cached_path = cache_data
-            # Verify the cached files actually exist on disk
-            if os.path.exists(cached_path) and os.listdir(cached_path):
-                logger.info(f"✅ Serving pack {set_id} from cache for user {user_id}.")
-                wastickers_files = sorted(glob.glob(os.path.join(cached_path, '*.wastickers')))
-                if wastickers_files:
-                    num_packs = len(wastickers_files)
-                    
-                    # We need to log this as a successful "conversion" even though it's from cache
-                    is_emoji_pack = sticker_set.set.emojis
-                    pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
-                    pack_url = f"https://t.me/{pack_type_url}/{sticker_set.set.short_name}"
-                    if log_id is None:
-                        log_id = db.log_conversion_request(user_id, sticker_set.set.id, pack_url, is_emoji_pack)
-                    
-                    await event.reply(f"✅ Found this pack in the cache! Sending **{num_packs}** file(s) instantly...")
-                    status = "completed_from_cache"
-                    all_uploads_succeeded = True
-                    safe_title = html.escape(current_title)
-                    for i, file_path in enumerate(wastickers_files):
-                        caption = f"📦 <a href=\"{pack_url}\">{safe_title}</a> - Part {i+1}/{len(wastickers_files)}\nSize: {format_file_size(os.path.getsize(file_path))}"
-                        try:
-                            await asyncio.wait_for(
-                                self.client.send_file(event.chat_id, file_path, caption=caption, link_preview=False, parse_mode='html'),
-                                timeout=UPLOAD_TIMEOUT
-                            )
-                        except asyncio.TimeoutError:
-                            status = "failed_upload_timeout"
-                            all_uploads_succeeded = False
-                            logger.error(f"Upload timeout for user {user_id}, file {file_path}")
-                            if num_packs == 1:
-                                await self.client.send_message(event.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
-                            else:
-                                await self.client.send_message(event.chat_id, f"❌ Timed out while uploading pack part {i+1}. Please try again later.")
-                            #notify 
-                            user = await event.get_sender()
-                            mock_item = SimpleNamespace(username=get_user_display_name(user), user_id=user.id, log_id=log_id, sticker_set=sticker_set)
-                            await self._notify_owner_of_failure(mock_item, "CacheUploadTimeout", f"File: {file_path}")
-                            break
-                        except Exception as e:
-                            status = "failed_upload_error"
-                            all_uploads_succeeded = False
-                            logger.error(f"Upload timeout for user {user_id}, file {file_path}")
-                            if num_packs == 1:
-                                await self.client.send_message(event.chat_id, f"❌ Failed to upload pack due to an error. Please use **/contact** to report it to the admins.")
-                            else:
-                                await self.client.send_message(event.chat_id, f"❌ Failed to upload pack part {i+1} due to an error. Please use **/contact** to report it to the admins.")
-                            #notify 
-                            user = await event.get_sender()
-                            mock_item = SimpleNamespace(username=get_user_display_name(user), user_id=user.id, log_id=log_id, sticker_set=sticker_set)
-                            await self._notify_owner_of_failure(mock_item, "CacheUploadError", f"File: {file_path}")
-                            break
-                    
-                    # if all successful upload
-                    if all_uploads_succeeded:
-                        logger.info(f"✅ Successfully sent the pack {set_id} from cache to user {user_id}.")
-                        await self.client.send_message(event.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
-                    db.update_conversion_log(log_id, status, datetime.now(), 0.0)
-                    return True
-                else:
-                    logger.warning(f"Cache inconsistency! Cache files for pack {set_id} are broken. Removing old files before re-converting.")
-                    shutil.rmtree(cached_path, ignore_errors=True)
-                    db.remove_from_cache(set_id)
-            else:
-                # The DB has an entry, but the files are missing!
-                logger.error(f"Cache inconsistency! Files for pack {set_id} not found at {cached_path}. Removing DB entry.")
-                db.remove_from_cache(set_id)
+            # Verify the cached files actually exist
+            if None not in await self.client.get_messages(channel_id, ids=message_ids):
+                logger.info(f"✅ Cache hit for pack {set_id} in channel {channel_id}. Forwarding to user {user_id}.")
+                num_packs = len(message_ids)
+                
+                # We need to log this as a successful conversion even though its from cache
+                is_emoji_pack = sticker_set.set.emojis
+                pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
+                pack_url = f"https://t.me/{pack_type_url}/{sticker_set.set.short_name}"
+                if log_id is None:
+                    log_id = db.log_conversion_request(user_id, sticker_set.set.id, pack_url, is_emoji_pack)
+                
+                await event.reply(f"✅ Found this pack in the cache! Sending **{num_packs}** file(s) instantly...")
 
+                try:
+                    messages = await self.client.get_messages(channel_id, ids=message_ids)
+                    for message in messages:
+                        await self.client.send_message(entity=event.chat_id, message=message, link_preview=False)
+
+                    logger.info(f"✅ Successfully forwarded pack {set_id} from cache to user {user_id}.")
+                    await self.client.send_message(event.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
+                    db.update_conversion_log(log_id, "completed_from_cache", datetime.now(), 0.0)
+                    return True
+                except UserIsBlockedError:
+                    # some dumbass block the bot even when it is sending files
+                    logger.error(f"User has blocked the bot! Failed to forward cached messages for pack {set_id} to user {user_id}.")
+                    db.update_conversion_log(log_id, "completed_from_cache_but_blocked", datetime.now(), 0.0)
+                    return True
+                # if all successful upload
+                except Exception as e:
+                    logger.error(f"Failed to forward cached messages for pack {set_id} to user {user_id}: {e}")
+                    # If forwarding fails, it's a critical error. Let's treat it as a cache miss and re-convert.
+                    await event.reply("🤔 Oops! I found this in the cache, but couldn't send it. I'll try re-converting it for you now.")
+                    db.update_conversion_log(log_id, "failed_forward_from_cache", datetime.now(), 0.0)
+                    # clear the broken cache
+                    await self.delete_cache(set_id)
+            else:
+                # The DB has an entry, but the messaages are missing or deletd!
+                logger.error(f"Cache inconsistency! Files for pack {set_id} not found in cahnnel {channel_id}. Removing DB entry.")
+                # clear the broken cache
+                await self.delete_cache(set_id)
         # --- stale cache T~T ---
         elif cache_status == 'stale':
-            stale_path = cache_data
-            logger.warning(f"Stale cache found for pack {set_id}. Removing old files before re-converting.")
-            shutil.rmtree(stale_path, ignore_errors=True) # Clean up old files
-            db.remove_from_cache(set_id) # Remove from DB
-            return False
+            logger.warning(f"Stale cache found for pack {set_id}. Deleting old cache before re-converting.")
+            self.delete_cache(set_id)
 
         return False # for cache miss or stale cache or inconsistent cache files 
     
@@ -425,6 +417,11 @@ class BotHandlers:
     async def handle_message(self, event: events.NewMessage.Event):
         """Handle incoming messages (sticker/emoji pack URLs, stickers, or custom emojis)."""
         user = await event.get_sender()
+        # check if owner is in sending state
+        if db.is_owner(user.id) and await self._get_user_state(user.id) == 'awaiting_addcache_input':
+            await self._handle_interactive_addcache(event)
+            raise StopPropagation # Stop further processing
+        
         db.add_or_update_user(user.id, user.username, get_user_display_name(user))
 
         if not await self.check_user_membership(user.id):
@@ -494,7 +491,7 @@ class BotHandlers:
             
         # Fetch the sticker/emoji set to get its actual name and type
         try:
-            sticker_set = await self.converter.get_sticker_set(pack_input)
+            sticker_set = await self.network_task.get_sticker_set(pack_input)
 
             if not sticker_set or not sticker_set.documents:
                  logger.error(f"Could not fetch a valid sticker set for input: {pack_input}")
@@ -551,8 +548,7 @@ class BotHandlers:
         # Determine if this pack is "cache suspicious"
         is_suspicious = False
         if self.cache_enabled:
-            currently_processing_id = queue_manager.get_processing_set_id()
-            if currently_processing_id and currently_processing_id == sticker_set.set.id:
+            if queue_manager.is_set_id_queued(sticker_set.set.id):
                 is_suspicious = True
                 logger.info(f"Queueing pack {sticker_set.set.id} as 'cache suspicious'.")
 
@@ -604,50 +600,6 @@ class BotHandlers:
                 asyncio.create_task(self.process_queue())
 
 
-    async def _cache_pack(self, set_id: int, new_cache_score: float, generated_files: list) -> list:
-        """
-        Decides whether to cache a newly converted pack and performs the caching.
-        Moves files to a permanent location if cached.
-        Returns a list of the final paths of the .wastickers files.
-        """
-        try:
-            cache_size, lowest_score_item = db.get_cache_info()
-
-            should_cache = False
-            if cache_size < MAX_CACHED_PACKS:
-                # The cache is not full, let's add it!
-                should_cache = True
-            elif lowest_score_item and new_cache_score > lowest_score_item['cache_score']:
-                # The cache is full, but our new pack is more valuable than the least valuable one.
-                # Evict the old one!
-                logger.info(f"Cache full. Evicting pack {lowest_score_item['set_id']} (score: {lowest_score_item['cache_score']}) to cache pack {set_id} (score: {new_cache_score}).")
-                shutil.rmtree(lowest_score_item['files_path'], ignore_errors=True) # Delete old files
-                db.remove_from_cache(lowest_score_item['set_id'])
-                should_cache = True
-            
-            if should_cache:
-                # --- Perform the caching ---
-                permanent_path = os.path.join(CACHE_DIR, str(set_id))
-                os.makedirs(permanent_path, exist_ok=True)
-                
-                final_paths = []
-                for temp_file_path in generated_files:
-                    # Move the file from the temporary OUTPUT_DIR to the permanent CACHE_DIR
-                    final_file_path = os.path.join(permanent_path, os.path.basename(temp_file_path))
-                    shutil.move(temp_file_path, final_file_path)
-                    final_paths.append(final_file_path)
-                
-                # Add the new pack to our cache database
-                db.add_to_cache(set_id, new_cache_score, permanent_path)
-                logger.info(f"Successfully cached pack {set_id} at '{permanent_path}'.")
-                return sorted(final_paths)
-
-        except Exception as e:
-            logger.error(f"An error occurred during the caching decision process for pack {set_id}: {e}")
-
-        # If we decided not to cache, or an error occurred, return the original temporary file paths.
-        return generated_files
-
     async def _run_conversion(self, item, is_silent_mode: bool = False):
         """
         The core logic for converting a single sticker pack.
@@ -679,6 +631,10 @@ class BotHandlers:
         is_emoji_pack = sticker_set.set.emojis
         estimated_seconds = item.estimated_seconds
         processing_timeout = max(60, estimated_seconds * 3)
+        status_for_db = "failed"
+
+        pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
+        pack_url = f"https://t.me/{pack_type_url}/{pack_short_name}"
 
         if not is_silent_mode:
             # Round off the time for better UI
@@ -695,10 +651,7 @@ class BotHandlers:
                     f"🤔 Estimated time: {estimated_time_str}"
             )
             
-            pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
             item_name = "emojis" if is_emoji_pack else "stickers"
-            pack_url = f"https://t.me/{pack_type_url}/{pack_short_name}"
-
             message = (f"📊 <b>Pack Details:</b>\n"
                     f"• Name: <a href=\"{pack_url}\">{safe_pack_title}</a>\n"
                     f"• Total {item_name}: {total_stickers}\n"
@@ -710,7 +663,8 @@ class BotHandlers:
         try:
             wastickers_files = await asyncio.wait_for(self.converter.create_wastickers_pack(sticker_set, item.username), timeout=processing_timeout)
         except asyncio.TimeoutError:
-            logger.error(f"Conversion timed out while creating .wasticker files.")
+            status_for_db = "failed_conversion_timeout"
+            logger.error(f"Conversion timed out while creating .wasticker files for user {item.user_id}. Log ID: {item.log_id}")
             if not is_silent_mode:
                 try:
                     await self.client.send_message(
@@ -721,14 +675,37 @@ class BotHandlers:
                     )
                 except Exception as e:
                     logger.warning(f"Could not send timeout message to {item.user_id}: {e}")
-
-            raise asyncio.TimeoutError("Conversion Timeout: Time out while creating .wasticker files.")
-
+            user = await item.event.get_sender()
+            user_display_name =get_user_display_name(user)
+            await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "ConversionTimeout", "Creating .wasticker files took longer than expected.")
+            return status_for_db # return failed status immidiately 
+        except Exception as e:
+            status_for_db = "failed_conversion_exception"
+            logger.error(f"Conversion failed while creating .wasticker files for user {item.user_id}. Log ID: {item.log_id}")
+            if not is_silent_mode:
+                try:
+                    await self.client.send_message(
+                        item.event.chat_id,
+                        (f"❌ The conversion for your pack has failed.\n"
+                        f"Please try again later or with a different pack.\n\n"
+                        f"If the problem persists, ping us at **{SUPPORT_GROUP}**")
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not send timeout message to {item.user_id}: {e}")
+            user = await item.event.get_sender()
+            user_display_name =get_user_display_name(user)
+            await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, type(e).__name__, str(e))
+            return status_for_db # return failed status immidiately 
+    
         if not wastickers_files:
+            status_for_db = "failed_no_wasticker_file"
             if not is_silent_mode:
                 await self.client.send_message(item.event.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{safe_pack_title}</a></b>. If the problem persists, ping us at **{SUPPORT_GROUP}**", link_preview=False, parse_mode='html')
             # This is a failure so we raise an exception.
-            raise Exception("Wasticker file creation returned no files.")
+            user = await item.event.get_sender()
+            user_display_name =get_user_display_name(user)
+            await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "NoWastickerFileCreated", "The conversion returned no .wasticker file.")
+            return status_for_db
 
         conversion_end_time = time.monotonic()
 
@@ -746,39 +723,161 @@ class BotHandlers:
             is_system_process=is_silent_mode
         )
 
-        # time to cache if it should be. Our helper will move the files if they are cached.
+        # ------------UPLOAD -------------
+        # If we get here conversion was successful (caching logic too) now we upload to channel for cache
+        cached_messages = []
+        target_cache_channel = None
         if self.cache_enabled:
-            final_file_paths = await self._cache_pack(sticker_set.set.id, new_cache_score, wastickers_files)
-        else:
-            final_file_paths = wastickers_files
- 
-        # If we get here conversion was successful (caching logic too) now we upload if its not a system task.
-        if not is_silent_mode:
-            await self.client.send_message(item.event.chat_id, f"✅ Conversion complete! Sending <b>{len(final_file_paths)}</b> file(s)...", link_preview=False, parse_mode='html')
-            
-            for i, file_path in enumerate(final_file_paths):
-                caption = f"📦 <a href=\"{pack_url}\">{safe_pack_title}</a> - Part {i+1}/{len(final_file_paths)}\nSize: {format_file_size(os.path.getsize(file_path))}"
+            target_cache_channel = db.get_or_create_cache_channel()
+            if target_cache_channel:
+                if not is_silent_mode:
+                    await self.client.send_message(item.event.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
+                
+                all_uploads_succeeded = True
                 try:
-                    await asyncio.wait_for(
-                        self.client.send_file(item.event.chat_id, file_path, caption=caption, link_preview=False, parse_mode='html'),
-                        timeout=UPLOAD_TIMEOUT
-                    )
-                except asyncio.TimeoutError:
-                    logger.error(f"Upload timeout for user {item.user_id}, file {file_path}")
+                    cached_messages = await self.network_task.upload_files(wastickers_files, pack_url, safe_pack_title, target_cache_channel)
+                    if not cached_messages or len(cached_messages) != len(wastickers_files): all_uploads_succeeded = False
+                    # Now, log this to our database
+                    if all_uploads_succeeded:
+                        status_for_db = "completed"
+                        cached_messages_id = [cached_message.id for cached_message in cached_messages]
+                        db.add_to_cache(sticker_set.set.id, new_cache_score, target_cache_channel, cached_messages_id)
+                        logger.info(f"Successfully cached pack {sticker_set.set.id} with message IDs: {cached_messages_id}")
+
+                except* FileUploadTimeoutError as eg_t:
+                    all_uploads_succeeded = False
+                    status_for_db = "failed_upload_timeout_while_caching"
+                    # collecting erros 
+                    failed_uploads = []
+                    first_failed_index = eg_t.exceptions[0].index
+                    for exc in eg_t.exceptions:
+                        logger.error(f"Upload timeout while caching for user {item.user_id}, file {exc.file_path}")
+                        failed_uploads.append(exc.file_path)
+                    # reporting to user
+                    if not is_silent_mode:
+                        if num_packs == 1:
+                            await self.client.send_message(item.event.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
+                        else:
+                            await self.client.send_message(item.event.chat_id, f"❌ Timed out while uploading pack part {first_failed_index+1}. Please try again later.")
+                    #notify owner
+                    user = await item.event.get_sender()
+                    user_display_name =get_user_display_name(user)
+                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "UploadTimeoutCaching", f"File: {', '.join(failed_uploads)}")
+                except* FileUploadWrapperError as eg_w:
+                    all_uploads_succeeded = False
+                    status_for_db = "failed_upload_error_while_caching"
+                    # collecting erros 
+                    failed_uploads = []
+                    first_failed_index = eg_w.exceptions[0].index
+                    for exc in eg_w.exceptions:
+                        # Log the original exception for full debug info
+                        logger.error(f"Upload error while caching for user {item.user_id}, file {exc.file_path}", exc_info=exc.original_exception)
+                        failed_uploads.append(exc.file_path)
+                    # reporting to user
+                    if not is_silent_mode:
+                        if num_packs == 1:
+                            await self.client.send_message(item.event.chat_id, f"❌ Failed to upload pack due to an error. Please use **/contact** to report it to the admins.")
+                        else:
+                            await self.client.send_message(item.event.chat_id, f"❌ Failed to upload pack part {first_failed_index+1} due to an error. Please use **/contact** to report it to the admins.")
+                    #notify owner
+                    user = await item.event.get_sender()
+                    user_display_name =get_user_display_name(user)
+                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "UploadErrorCaching", f"File: {", ".join(failed_uploads)}")
+                finally:
+                    # This ensures temporary .wastickers files are deleted if they weren't cached and moved.
+                    for file_path in wastickers_files:
+                        if os.path.exists(file_path):
+                            logger.debug(f"Cleaning up temporary output file: {file_path}")
+                            os.remove(file_path)
+                    # if we coudnt uplaod all files sucessfully delete others too
+                    if not all_uploads_succeeded and cached_messages:
+                        try:
+                            cached_message_ids = [message.id for message in cached_messages]
+                            await self.client.delete_messages(target_cache_channel, cached_message_ids)
+                        except ChatAdminRequiredError:
+                            logger.error(f"Can't delete messages! Bot is not an admin or doesn't have reqired permissions in the channel {target_cache_channel}!")
+                        except Exception as e:
+                            logger.error(f"Could not delete messages {cached_message_ids} in the channel {target_cache_channel}. An error has occured: {e}")
+
+                # ----- now send from cache (if not a system task) --------
+                if not is_silent_mode and all_uploads_succeeded:
+                    try:
+                        for message in cached_messages:
+                            await self.client.send_message(entity=item.event.chat_id, message=message, link_preview=False)
+
+                        await self.client.send_message(item.event.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
+                        status_for_db = "completed"
+                    except UserIsBlockedError:
+                        # some dumbass block the bot even before it sends files
+                        status_for_db = "completed_but_blocked"
+                        logger.error(f"User has blocked the bot! Failed to forward cached messages for pack {sticker_set.set.id,} to user {item.user_id}.")
+                    except Exception as e:
+                        logger.error(f"Failed to forward newly cached pack {sticker_set.set.id} to user {item.user_id}: {e}")
+                        await self.client.send_message(item.event.chat_id, "❌ An error occurred while sending your files. Please use **/contact** to report this.")
+                        status_for_db = "failed_forward"
+
+        else: # caching is off idk for what reasons 
+            if not is_silent_mode:
+                await self.client.send_message(item.event.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
+                
+                all_uploads_succeeded = True
+                try:
+                    await self.network_task.upload_files(wastickers_files, pack_url, safe_pack_title, item.event.chat_id)
+                    status_for_db = "completed"
+                except* UserIsBlockedError:
+                    # some dumbass block the bot even before it sends files
+                    status_for_db = "completed_but_blocked"
+                    all_uploads_succeeded = False
+                    logger.error(f"User has blocked the bot! Failed to send .wasticker files for pack {sticker_set.set.id,} to user {item.user_id}.")
+                except* FileUploadTimeoutError as eg_t:
+                    status_for_db = "failed_upload_timeout"
+                    all_uploads_succeeded = False
+                    # collecting erros 
+                    failed_uploads = []
+                    first_failed_index = eg_t.exceptions[0].index
+                    for exc in eg_t.exceptions:
+                        logger.error(f"Upload timeout for user {item.user_id}, file {exc.file_path}")
+                        failed_uploads.append(exc.file_path)
+                    # reporting user 
                     if num_packs == 1:
                         await self.client.send_message(item.event.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
                     else:
-                        await self.client.send_message(item.event.chat_id, f"❌ Timed out while uploading pack part {i+1}. Please try again later.")
-                    raise asyncio.TimeoutError("Upload Timeout: Time out while uploading the pack.")
-                
-            # If all uploads were successful
-            await self.client.send_message(item.event.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
+                        await self.client.send_message(item.event.chat_id, f"❌ Timed out while uploading pack part {first_failed_index+1}. Please try again later.")
+                    #notify owner
+                    user = await item.event.get_sender()
+                    user_display_name =get_user_display_name(user)
+                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "UploadTimeout", f"File: {", ".join(failed_uploads)}")
+                except* FileUploadWrapperError as eg_w:
+                    status_for_db = "failed_upload_error"
+                    all_uploads_succeeded = False
+                    # collecting erros 
+                    failed_uploads = []
+                    first_failed_index = eg_w.exceptions[0].index
+                    for exc in eg_w.exceptions:
+                        # Log the original exception for full debug info
+                        logger.error(f"Upload error for user {item.user_id}, file {exc.file_path}", exc_info=exc.original_exception)
+                        failed_uploads.append(exc.file_path)
+                    # reporting user
+                    if num_packs == 1:
+                        await self.client.send_message(item.event.chat_id, f"❌ Failed to upload pack due to an error. Please use **/contact** to report it to the admins.")
+                    else:
+                        await self.client.send_message(item.event.chat_id, f"❌ Failed to upload pack part {first_failed_index+1} due to an error. Please use **/contact** to report it to the admins.")
+                    #notify owner
+                    user = await item.event.get_sender()
+                    user_display_name =get_user_display_name(user)
+                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "UploadError", f"File: {", ".join(failed_uploads)}")
+                finally:
+                    # This ensures temporary .wastickers files are deleted if they weren't cached and moved.
+                    for file_path in wastickers_files:
+                        if os.path.exists(file_path):
+                            logger.debug(f"Cleaning up temporary output file: {file_path}")
+                            os.remove(file_path)
 
-        # This ensures temporary .wastickers files are deleted if they weren't cached and moved.
-        for file_path in wastickers_files:
-            if os.path.exists(file_path):
-                logger.debug(f"Cleaning up temporary output file: {file_path}")
-                os.remove(file_path)
+                # If all uploads were successful
+                if all_uploads_succeeded:
+                    await self.client.send_message(item.event.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
+                    
+        return status_for_db
 
     async def process_queue(self):
         """Process the conversion queue."""
@@ -787,7 +886,9 @@ class BotHandlers:
                 item = await queue_manager.get_next_item()
                 if not item:
                     break
-                # check for cache suspecious item
+
+                # ------ last cache check (if applicable) ------------------
+                # check for cache suspecious item (for user items)
                 if item.is_cache_suspicious:
                     logger.info(f"Re-checking cache for suspicious item from user {item.user_id} (Log ID: {item.log_id})")
                     try:
@@ -799,45 +900,79 @@ class BotHandlers:
                             continue # Success! Move to the next item in the queue.
                     except Exception as e:
                         logger.error(f"Error during suspicious cache check for log {item.log_id}: {e}")
+                
+                # Before running cache refresh or add, check if the pack got cached by another process (for system items)
+                if item.is_silent_mode:
+                    sticker_set = item.sticker_set
+                    try:
+                        cache_status, channel_id, msg_ids = db.is_pack_cached(sticker_set.set.id, sticker_set.set.title, len(sticker_set.documents), is_system_process=True)
+
+                        if cache_status == 'hit':
+                            # The DB says it's cached. Let's quickly verify the files are still there.
+                            messages = await self.client.get_messages(channel_id, ids=msg_ids)
+                            if messages and all(m is not None for m in messages):
+                                # The cache is valid and exists. We can safely skip this redundant job.
+                                logger.info(f"Skipping processing for pack '{sticker_set.set.short_name}' (Log ID: {item.log_id}) as it's already cached.")
+                                
+                                # We must properly close out this queue item and log it.
+                                db.update_conversion_log(item.log_id, "completed_skipped_pre_cached", datetime.now(), 0.0)
+                                await queue_manager.complete_processing(item.user_id, success=True)
+                                
+                                # And importantly clean up our system job trackers i mean those damn sets
+                                if item.log_id in self.active_refresh_jobs:
+                                    self.active_refresh_jobs.discard(item.log_id)
+                                    if not self.active_refresh_jobs and not self.active_refresh_message:
+                                        await self.client.send_message(OWNER_ID, "✅ **Cache refresh operation complete!**")
+                                
+                                if item.log_id in self.active_add_jobs:
+                                    self.active_add_jobs.discard(item.log_id)
+                                    if not self.active_add_jobs and not self.active_add_message:
+                                        await self.client.send_message(OWNER_ID, "✅ **Add-to-cache operation complete!**")
+
+                                continue # Success! Move to the next item in the queue.
+                                
+                    except Exception as e:
+                        logger.warning(f"Pre-check failed for pack '{sticker_set.set.short_name}': {e}. Proceeding with conversion as a fallback.")
 
 
                 start_time = datetime.now()
                 success = False 
-                status_for_db = "failed"
+                status_for_db = "None"
                 try:                    
-                    await self._run_conversion(item, item.is_silent_mode)
+                    status_for_db = await self._run_conversion(item, item.is_silent_mode)
 
-                    # If the above line completes without any exception, it was a success
-                    success = True
-                    status_for_db = "completed"
-
-                except asyncio.TimeoutError as e:
-                    if str(e).startswith("Conversion"):
-                        status_for_db = "failed_conversion_timeout"
-                    elif str(e).startswith("Upload"):
-                        status_for_db = "failed_upload_timeout"
-                    logger.error(f"Processing timed out for user {item.user_id}. ERROR: {e}")
-                    await self._notify_owner_of_failure(item, "TimeoutError", str(e))
-
-                except Exception as e: # other exceptions
+                except Exception as e:
                     status_for_db = "failed_exception"
-                    logger.error(f"An exception occurred while processing queue item for user {item.user_id}: {e}")
-                    await self._notify_owner_of_failure(item, type(e).__name__, str(e))
+                    logger.error(f"An exception occurred while processing queue item for user {item.user_id}: {e}", exc_info=True)
+                    user = await item.event.get_sender()
+                    user_display_name =get_user_display_name(user)
+                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, item.sticker_set, f"Some error that you never expeted: {type(e).__name__}", str(e))
 
                 finally:
                     # Update the database log
                     completion_time = datetime.now()
                     duration = (completion_time - start_time).total_seconds()
                     db.update_conversion_log(item.log_id, status_for_db, completion_time, duration)
+                    if status_for_db.startswith("completed"):
+                        success = True
                     await queue_manager.complete_processing(item.user_id, success)
 
-                    #if it was a system generated refresh task               
+                    # check if it was a system generated task ---------      
+      
                     if item.log_id in self.active_refresh_jobs:
                         self.active_refresh_jobs.discard(item.log_id)
                         # If that was the last job, notify the owner
                         if not self.active_refresh_jobs:
                             logger.info("All cache refresh jobs have been completed.")
                             await self.client.send_message(OWNER_ID, "✅ **Cache refresh operation complete!**")
+
+                    if item.log_id in self.active_add_jobs:
+                        self.active_add_jobs.discard(item.log_id)
+                        # If that was the last job, notify the owner
+                        if not self.active_add_jobs and not self.active_add_message:
+                            logger.info("All add-cache jobs have been completed.")
+                            await self.client.send_message(OWNER_ID, "✅ **Add-to-cache operation complete!**")
+
 
 
     # Admin commands starts here
@@ -1618,7 +1753,7 @@ class BotHandlers:
             
             action_type = "clearcache_all"
             confirm_message = f"🗑️ Are you sure you want to clear the **entire cache**? This will remove **{len(all_packs)}** packs and cannot be undone."
-            action_payload = {"packs_to_clear": [{"set_id": p["set_id"], "path": p["files_path"]} for p in all_packs]}
+            action_payload = {"packs_to_clear": set(all_packs)}
 
         else: # It's a list of links
             pack_names = [extract_pack_name_from_url(link) for link in args]
@@ -1662,9 +1797,9 @@ class BotHandlers:
         action_payload = {}
 
         if not args or (len(args) == 1 and args[0].isdigit()):
-            limit = int(args[0]) if args else MAX_CACHED_PACKS
+            limit = int(args[0]) if args else "all"
             action_type = "refreshcache_top_n"
-            confirm_message = f"🔄 This will **clear the entire cache** and then re-cache the top **{limit}** packs based on score. This may take a while.\n\nAre you sure?"
+            confirm_message = f"🔄 This will **clear the entire cache** and then re-cache {"**ALL** packs." if limit == "all" else f"the top **{limit}** packs based on score"}. This may take a while.\n\nAre you sure?"
             action_payload = {"limit": limit}
         else:
             pack_names = [extract_pack_name_from_url(link) for link in args]
@@ -1691,7 +1826,7 @@ class BotHandlers:
             await event.reply("✅ No active cache refresh operation to cancel.")
             return
 
-        await event.reply(f"Cancelling {len(self.active_refresh_jobs)} queued refresh jobs...")
+        msg = await event.reply(f"Cancelling {len(self.active_refresh_jobs)} queued refresh jobs...")
         
         cancelled_count = 0
         # Create a copy to iterate over, as the set will be modified
@@ -1710,7 +1845,7 @@ class BotHandlers:
             except Exception:
                 pass # Message might have been deleted
 
-        await event.reply(f"✅ Cancelled **{cancelled_count}** pending jobs from the queue.")
+        await msg.edit(f"✅ Cancelled **{cancelled_count}** pending jobs from the queue.")
         raise StopPropagation
 
     async def _execute_refresh_task(self, action_type: str, payload: dict, original_event: events.NewMessage.Event):
@@ -1720,32 +1855,32 @@ class BotHandlers:
         
         if action_type == "refreshcache_top_n":
             limit = payload['limit']
-            if self.active_refresh_message: await self.client.edit_message(self.active_refresh_message, f"Step 1/3: Clearing entire cache...")
+            if self.active_refresh_message: await self.client.edit_message(self.active_refresh_message, f"Step 1/2: Clearing entire cache...")
             
             # Clear entire cache
             all_packs = db.get_all_cached_packs()
-            for pack in all_packs:
-                shutil.rmtree(pack['files_path'], ignore_errors=True)
-                db.remove_from_cache(pack['set_id'])
-            
-            if self.active_refresh_message: await self.client.edit_message(self.active_refresh_message, f"Step 2/3: Fetching top {limit} packs from database...")
-            packs_to_queue = db.get_top_packs_by_score(limit)
+            await self.delete_multiple_cache(all_packs)
+
+            all_packs_short_name = None
+            if limit == "all":
+                all_packs_short_name = db.get_all_packs()
+            packs_to_queue = all_packs_short_name if limit == "all" else db.get_top_packs_by_score(limit) 
 
         elif action_type == "refreshcache_links":
             pack_names = payload['pack_short_names']
             if self.active_refresh_message: await self.client.edit_message(self.active_refresh_message, f"Step 1/2: Clearing cache for {len(pack_names)} specified packs...")
             # Clear specified packs and prepare for queueing
+            set_ids = []
             for name in pack_names:
                 set_id = db.get_set_id_by_short_name(name)
                 if set_id:
-                    cached_pack = db.get_cached_pack_by_id(set_id)
-                    if cached_pack:
-                        shutil.rmtree(cached_pack['files_path'], ignore_errors=True)
-                        db.remove_from_cache(set_id)
+                    set_ids.append(set_id)
+            await self.delete_multiple_cache(set_ids)
+
             packs_to_queue = pack_names
 
         total_to_queue = len(packs_to_queue)
-        if self.active_refresh_message: await self.client.edit_message(self.active_refresh_message, f"Step 3/3: Queueing {total_to_queue} packs for conversion...")
+        if self.active_refresh_message: await self.client.edit_message(self.active_refresh_message, f"Step 2/2: Checking and Queueing {total_to_queue} packs for conversion...")
         else: return
 
         queued_count = 0
@@ -1756,7 +1891,7 @@ class BotHandlers:
                 break
 
             try:
-                sticker_set = await self.converter.get_sticker_set(short_name)
+                sticker_set = await self.network_task.get_sticker_set(short_name)
                 if not sticker_set or not sticker_set.documents: continue
 
                 estimated_seconds = estimate_wait_time(sticker_set.documents, None)
@@ -1774,7 +1909,7 @@ class BotHandlers:
                 self.active_refresh_jobs.add(log_id)
                 queued_count += 1
                 if queued_count % 10 == 0 and self.active_refresh_message: # Update every 10 packs
-                    await self.client.edit_message(self.active_refresh_message, f"Step 3/3: Queued {queued_count}/{total_to_queue} packs...")
+                    await self.client.edit_message(self.active_refresh_message, f"Step 2/2: Queued {queued_count}/{total_to_queue} packs...")
 
             except Exception as e:
                 logger.error(f"Failed to queue pack {short_name} for refresh: {e}")
@@ -1789,7 +1924,280 @@ class BotHandlers:
             if not is_processing:
                 asyncio.create_task(self.process_queue())
 
+    async def _handle_interactive_addcache(self, event: events.NewMessage.Event):
+        """Handles a single pack submission in interactive add-cache mode."""
+        pack_input = None
+        if event.text:
+            pack_input = extract_pack_name_from_url(event.text)
+        elif event.sticker:
+            for attr in event.sticker.attributes:
+                if isinstance(attr, DocumentAttributeSticker):
+                    pack_input = attr.stickerset
+                    break
+        elif event.document and hasattr(event.document, 'attributes'):
+            for attr in event.document.attributes:
+                if isinstance(attr, DocumentAttributeCustomEmoji):
+                    pack_input = attr.stickerset
+                    break
         
+        if not pack_input:
+            await event.reply("❌ Invalid input. Please send a sticker/emoji pack link, or a sticker/emoji from the pack.")
+            return
+
+        try:
+            sticker_set = await self.network_task.get_sticker_set(pack_input)
+            if not sticker_set or not sticker_set.documents:
+                await event.reply("❌ Couldn't find that sticker pack. It might be private or empty.")
+                return
+
+            # Perform a silent cache check
+            set_id = sticker_set.set.id
+            set_title = sticker_set.set.title
+            set_count = len(sticker_set.documents)
+
+            cache_status, channel_id, message_ids = db.is_pack_cached(set_id, set_title, set_count)
+
+            if cache_status == 'hit':
+                messages = await self.client.get_messages(channel_id, ids=message_ids)
+                if messages and all(msg is not None for msg in messages):
+                    await event.reply(f"✅ Pack '{set_title}' is already in the cache. Skipped.")
+                    return
+                else:
+                    await self.delete_cache(set_id) # Inconsistent cache
+            elif cache_status == 'stale':
+                await self.delete_cache(set_id)
+            
+            # Queue it
+            placeholder = await event.reply(f"✅ Adding '{set_title}' to the queue...")
+            system_id = SYSTEM_USER_ID
+            estimated_seconds = estimate_wait_time(sticker_set.documents, None)
+            is_emoji = sticker_set.set.emojis
+            pack_url = f"https://t.me/add{'emoji' if is_emoji else 'stickers'}/{sticker_set.set.short_name}"
+            log_id = db.log_conversion_request(system_id, set_id, pack_url, is_emoji)
+            
+            position = await queue_manager.add_to_queue(
+                user_id=system_id, username="System AddCache (Interactive)", bot_reply_message_id=placeholder.id,
+                pack_input=pack_input, sticker_set=sticker_set,
+                estimated_seconds=estimated_seconds, log_id=log_id,
+                priority=SYSTEM_PRIORITY, event=event, is_cache_suspicious=False,
+                is_silent_mode=True
+            )
+            self.active_add_jobs.add(log_id)
+            await placeholder.edit(f"✅ Queued '{set_title}' for caching at position {position}.")
+            
+            if not self.processing_lock.locked():
+                if not queue_manager.get_queue_stats()["currently_processing"]:
+                    asyncio.create_task(self.process_queue())
+
+        except Exception as e:
+            await event.reply(f"❌ An error occurred: {e}")
+            logger.error(f"Interactive AddCache Error: {e}", exc_info=True)
+    
+    async def addcache_command(self, event: events.NewMessage.Event):
+        """Owner command to add non-cached packs to the cache."""
+        if self.active_add_jobs:
+            await event.reply(
+                "⚠️ An add-to-cache operation is already in progress.\n"
+                "Please wait for it to complete, or use /canceladdcache to stop it.",
+                buttons=[[Button.inline("❌ Cancel Current Add-Cache", b"cancel_addcache_prompt")]]
+            )
+            return
+
+        args = event.text.split()[1:]
+        action_id = os.urandom(8).hex()
+        action_type = ""
+        confirm_message = ""
+        action_payload = {}
+
+        if not args:
+            # Interactive mode
+            action_type = "addcache_interactive"
+            confirm_message = "✨ You are about to enter **Interactive Add-Cache Mode**.\n\nSend me sticker packs (links, stickers, or emojis) one by one. I'll add them to the cache queue. Send /done when you're finished.\n\nAre you sure you want to begin?"
+            action_payload = {}
+
+        elif len(args) == 1 and args[0].lower() == 'all':
+            action_type = "addcache_all"
+            confirm_message = "🔄 This will queue **ALL** packs from the stats database that are not yet cached. This might be a very large number and take a long time.\n\nAre you sure?"
+            action_payload = {}
+
+        elif len(args) == 1 and args[0].isdigit():
+            limit = int(args[0])
+            action_type = "addcache_n"
+            confirm_message = f"🔄 This will queue the top **{limit}** most popular packs from the stats database that are not yet cached.\n\nAre you sure?"
+            action_payload = {"limit": limit}
+
+        else: # Links
+            pack_names = [extract_pack_name_from_url(link) for link in args]
+            valid_packs = [name for name in pack_names if name]
+            if not valid_packs:
+                await event.reply("❌ No valid sticker/emoji pack links found.")
+                return
+
+            action_type = "addcache_links"
+            confirm_message = f"🔄 This will queue **{len(valid_packs)}** specific pack(s) to be added to the cache (if not already present).\n\nAre you sure?"
+            action_payload = {"pack_short_names": valid_packs}
+
+        self.pending_actions[action_id] = {"action_type": action_type, "payload": action_payload, "original_event": event}
+        buttons = [
+            [Button.inline("✅ Yes, Proceed", data=f"confirm_action_{action_id}")],
+            [Button.inline("❌ Cancel", data=f"cancel_action_{action_id}")]
+        ]
+        await event.reply(confirm_message, buttons=buttons)
+        raise StopPropagation
+
+
+    async def canceladdcache_command(self, event: events.NewMessage.Event):
+        """Owner command to cancel an ongoing add-cache operation."""
+        if not self.active_add_jobs and await self._get_user_state(event.sender_id) != 'awaiting_addcache_input':
+            await event.reply("✅ No active add-cache operation to cancel.")
+            return
+        
+        # Handle cancelling the interactive mode
+        if await self._get_user_state(event.sender_id) == 'awaiting_addcache_input':
+            await self._pop_user_state(event.sender_id)
+            await event.reply("✅ Interactive add-cache mode has been cancelled.")
+
+        if not self.active_add_jobs:
+            return # No background jobs to cancel
+
+        msg = await event.reply(f"Cancelling {len(self.active_add_jobs)} queued add-cache jobs...")
+
+        cancelled_count = 0
+        jobs_to_cancel = list(self.active_add_jobs)
+        for log_id in jobs_to_cancel:
+            if await queue_manager.cancel_item(user_id=SYSTEM_USER_ID, log_id=log_id):
+                cancelled_count += 1
+
+        self.active_add_jobs.clear()
+
+        if self.active_add_message:
+            try:
+                await self.client.edit_message(self.active_add_message.chat_id, self.active_add_message.id, "❌ Add-cache operation cancelled by user.")
+                self.active_add_message = None
+            except Exception:
+                pass
+
+        await msg.edit(f"✅ Cancelled **{cancelled_count}** pending jobs from the queue.")
+        raise StopPropagation
+
+    async def done_command(self, event: events.NewMessage.Event):
+        """Owner command to exit interactive add-cache mode."""
+        if await self._get_user_state(event.sender_id) == 'awaiting_addcache_input':
+            await self._pop_user_state(event.sender_id)
+            await event.reply("✅ **Finished!** Exited interactive add-cache mode.")
+        # Silently ignore if not in the correct state
+        raise StopPropagation
+
+    async def _execute_addcache_task(self, action_type: str, payload: dict, original_event: events.NewMessage.Event):
+        """The background task that fetches, verifies, and queues non-cached packs."""
+        system_id = SYSTEM_USER_ID
+        packs_to_process = []
+
+        # Step 1: Get the list of pack short_names to process
+        try:
+            if action_type == "addcache_links":
+                packs_to_process = payload['pack_short_names']
+                if self.active_add_message: await self.client.edit_message(self.active_add_message, f"Step 1/2: Preparing to check {len(packs_to_process)} specified packs...")
+
+            elif action_type == "addcache_all":
+                if self.active_add_message: await self.client.edit_message(self.active_add_message, "Step 1/2: Fetching ALL non-cached packs from the database...")
+                packs_to_process = await asyncio.to_thread(db.get_non_cached_packs)
+
+            elif action_type == "addcache_n":
+                limit = payload['limit']
+                if self.active_add_message: await self.client.edit_message(self.active_add_message, f"Step 1/2: Fetching top {limit} non-cached packs from the database...")
+                packs_to_process = await asyncio.to_thread(db.get_non_cached_packs, limit=limit)
+        except Exception as e:
+            logger.error(f"AddCache: Failed to fetch packs from DB: {e}", exc_info=True)
+            if self.active_add_message: await self.client.edit_message(self.active_add_message, f"❌ Failed to fetch pack list from database: {e}")
+            return
+
+        total_to_process = len(packs_to_process)
+        if self.active_add_message: await self.client.edit_message(self.active_add_message, f"Step 2/2: Checking and queueing {total_to_process} packs...")
+        else: return
+
+        queued_count = 0
+        skipped_count = 0
+        failed_count = 0
+
+        for i, short_name in enumerate(packs_to_process, 1):
+            if i > 1 and not self.active_add_message:
+                logger.info("Add-cache operation was cancelled. Halting queueing task.")
+                break
+            
+            try:
+                sticker_set = await self.network_task.get_sticker_set(short_name)
+                if not sticker_set or not sticker_set.documents:
+                    logger.warning(f"AddCache: Could not fetch sticker set for '{short_name}'. Skipping.")
+                    failed_count += 1
+                    continue
+                
+                set_id = sticker_set.set.id
+                set_title = sticker_set.set.title
+                set_count = len(sticker_set.documents)
+
+                cache_status, channel_id, message_ids = db.is_pack_cached(set_id, set_title, set_count)
+                
+                if cache_status == 'hit':
+                    try:
+                        messages = await self.client.get_messages(channel_id, ids=message_ids)
+                        if messages and all(msg is not None for msg in messages):
+                            skipped_count += 1
+                            continue
+                        else:
+                            logger.warning(f"AddCache: Inconsistent cache for {short_name}. Clearing and re-queueing.")
+                            db.remove_from_cache(set_id)
+                    except Exception as e:
+                        logger.error(f"AddCache: Error verifying messages for {short_name}: {e}. Re-queueing.")
+                        db.remove_from_cache(set_id)
+                
+                elif cache_status == 'stale':
+                    logger.warning(f"AddCache: Stale cache for {short_name}. Clearing and re-queueing.")
+                    channel_id, message_ids = db.remove_from_cache(set_id)
+                    try:
+                        if channel_id and message_ids:
+                            await self.client.delete_messages(channel_id, message_ids)
+                    except Exception as e:
+                        logger.error(f"AddCache: Failed to delete stale messages for {short_name}: {e}")
+
+                estimated_seconds = estimate_wait_time(sticker_set.documents, None)
+                is_emoji = sticker_set.set.emojis
+                pack_url = f"https://t.me/add{'emoji' if is_emoji else 'stickers'}/{short_name}"
+                log_id = db.log_conversion_request(system_id, sticker_set.set.id, pack_url, is_emoji)
+                
+                await queue_manager.add_to_queue(
+                    user_id=system_id, username="System AddCache", bot_reply_message_id=original_event.id,
+                    pack_input=short_name, sticker_set=sticker_set,
+                    estimated_seconds=estimated_seconds, log_id=log_id,
+                    priority=SYSTEM_PRIORITY, event=original_event, is_cache_suspicious=False,
+                    is_silent_mode=True
+                )
+                self.active_add_jobs.add(log_id)
+                queued_count += 1
+
+                if i % 10 == 0 and self.active_add_message:
+                    await self.client.edit_message(self.active_add_message, f"Step 2/2: Progress...\n- Queued: {queued_count}\n- Skipped: {skipped_count}\n- Failed: {failed_count}\n- Total: {i}/{total_to_process}")
+
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"Failed to queue pack {short_name} for add-cache: {e}")
+
+        if self.active_add_message:
+            final_message = (
+                f"✅ **Add-Cache Queuing Complete!**\n\n"
+                f"• Successfully queued: **{queued_count}**\n"
+                f"• Skipped (already cached): **{skipped_count}**\n"
+                f"• Failed to queue: **{failed_count}**\n\n"
+                f"Conversions will now run in the background with low priority."
+            )
+            await self.client.edit_message(self.active_add_message, final_message)
+
+        self.active_add_message = None
+        if not self.processing_lock.locked():
+            is_processing = queue_manager.get_queue_stats()["currently_processing"]
+            if not is_processing:
+                asyncio.create_task(self.process_queue())
+
     # Admins commands
     async def add_premium_command(self, event: events.NewMessage.Event):
         """Admin command to add a premium user."""
@@ -2354,7 +2762,11 @@ class BotHandlers:
             await event.answer()
             await event.edit("To cancel the ongoing refresh and clear all pending refresh jobs from the queue, please send the command: /cancelrefresh")
 
-        # Handle send/broadcast confirmation
+        elif data == "cancel_addcache_prompt":
+            await event.answer()
+            await event.edit("To cancel the ongoing add-cache operation and clear all pending add jobs from the queue, please send the command: /canceladdcache")
+
+        # Handle various confirmations
         if data.startswith(("confirm_action_", "cancel_action_")):
             if not db.is_owner(user_id):
                 await event.answer("You are not authorized to perform this action.", alert=True)
@@ -2436,15 +2848,18 @@ class BotHandlers:
             
             elif action_type == 'clearcache_all':
                 packs_to_clear = pending_action['payload']['packs_to_clear']
-                await event.edit(f"Clearing all {len(packs_to_clear)} cached packs...")
+                await event.edit(f"🗑️ Deleting all {len(packs_to_clear)} cached packs from Telegram channels...")
                 
-                cleared_count = 0
-                for pack in packs_to_clear:
-                    shutil.rmtree(pack['path'], ignore_errors=True)
-                    db.remove_from_cache(pack['set_id'])
-                    cleared_count += 1
-                
-                await event.edit(f"✅ **Cache Cleared!**\nSuccessfully removed **{cleared_count}** packs.")
+                success = await self.delete_multiple_cache(packs_to_clear)
+                if success:
+                    logger.info(f"Cache Cleared! Successfully deleted {len(packs_to_clear)} packs from cache channels.")
+                    await event.edit(f"✅ **Cache Cleared!**\nSuccessfully deleted **{len(packs_to_clear)}** packs from cache channels.")
+                if success is False:
+                    logger.error(f"Failed to delete cached packs from cache channels.")
+                    await event.edit(f"❌ **Failed to Clear Cache!**\nDeletion of some cached packs from the cached channels failed.")
+                if success is None:
+                    logger.warning(f"Cache is empty, nothing to clear, fake request detected.")
+                    await event.edit(f"**Nothing to clear**\nSeems there is nothing to clear in cache. But technically you shouldn't have reached here. 🤔")
                 return
 
             elif action_type == 'clearcache_packs':
@@ -2460,14 +2875,20 @@ class BotHandlers:
                         fail_list.append(f"• `{name}` (Not found)")
                         continue
                     
-                    cached_pack = db.get_cached_pack_by_id(set_id)
-                    if cached_pack:
-                        shutil.rmtree(cached_pack['files_path'], ignore_errors=True)
-                        db.remove_from_cache(set_id)
-                        success_list.append(f"• `{name}`")
+                    position = db.remove_from_cache(set_id)
+                    if position:
+                        channel_id, message_ids = position
+                        try:
+                            await self.client.delete_messages(channel_id, message_ids)
+                            success_list.append(f"• `{name}`")
+                            await asyncio.sleep(1) # Rate limit buffer
+                        except Exception as e:
+                            logger.error(f"Failed to delete messages for pack {name} set ID {set_id} from channel {channel_id}: {e}")
+                            fail_list.append(f"• `{name}` (Deletion failed)")
                     else:
                         fail_list.append(f"• `{name}` (Not in cache)")
                 
+                logger.info(f"Cache clear complete! Successfully Cleared: {len(success_list)} Failed/Not Found: {len(fail_list)}")
                 response_message = "✅ **Cache Clearing Complete!**\n\n"
                 if success_list:
                     response_message += f"**Successfully Cleared:**\n" + "\n".join(success_list) + "\n\n"
@@ -2481,6 +2902,17 @@ class BotHandlers:
                 self.active_refresh_message = await event.edit("🚀 **Starting Cache Refresh...**\nThis may take a moment to prepare.", buttons=None)
                 original_event = pending_action['original_event']
                 asyncio.create_task(self._execute_refresh_task(action_type, pending_action['payload'], original_event))
+                return
+
+            elif action_type in ("addcache_all", "addcache_n", "addcache_links"):
+                self.active_add_message = await event.edit("🚀 **Starting Add-Cache...**\nThis may take a moment to prepare.", buttons=None)
+                original_event = pending_action['original_event']
+                asyncio.create_task(self._execute_addcache_task(action_type, pending_action['payload'], original_event))
+                return
+
+            elif action_type == "addcache_interactive":
+                await self._set_user_state(user_id, "awaiting_addcache_input")
+                await event.edit("✅ **Interactive Add-Cache Mode is active.**\n\nSend sticker packs to add them to the cache. Send /done when you are finished.", buttons=None)
                 return
             
         elif data.startswith("suggest_"):

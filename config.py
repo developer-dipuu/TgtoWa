@@ -5,7 +5,7 @@ Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter 
 # ========= Should be changed ===================
 
 # Telegram API things (its must )
-API_ID = 12345678 #  Replace with your API ID (must)
+API_ID = 12345678 # Replace with your API ID (must)
 API_HASH = "" # Your API HASH (must)
 BOT_TOKEN = "" # Your bot token (must)
 
@@ -18,11 +18,15 @@ For private channel/group add a tuple like this ("Name", "link", -1212324141)
 -1212324141 is your channel/group id, get it by forwarding any of your channel/group's message to @username_to_id_bot (or @MissRose_bot and reply /id to that message)
  ⚠️⚠️⚠️ [("Public_Channel_Name", "@channel_1_username"), ("Private_Channel_Name", "https://t.me/+abcdefghijk", -34876824274 )] ⚠️⚠️⚠️  Use this format Only '''
 
-REQUIRED_CHANNELS = []  # channels that users must join to use the bot
+REQUIRED_CHANNELS = []
 
 
 # Support group for bot related queries (will be used in help message)
-SUPPORT_GROUP = "@your_support_group_here"  # if you're done editing this far you are good to go (you may review DOWNLOAD_TIMEOUT but dont change other shits unless you know what you are doing)
+SUPPORT_GROUP = "@your_support_group_here"    
+
+
+# if you're done editing this far the only thing must to edit is the CACHE_CHANNEL_IDS (if the CACHE_ENABLED is True, that is by default and recommended).
+# You may review and adjust "Timeouts and processing limits" section as per your connection speed and needs but dont change other shits unless you know what you are doing)
 
 
 # =============================================
@@ -55,10 +59,10 @@ DB_PATH = f"{DATA_DIR}/bot_data.db" # its by default in the data directory but i
 
 # ------ Cache settings ----------
 CACHE_ENABLED = True # To use cache or not, owner can change it using the bot too but on bot restarts it will change to this default value
-CACHE_DIR = "cache"
-MAX_CACHED_PACKS = 1000 
 CACHE_SCORE_TIME_WEIGHT = 1.5   # Weight for conversion duration (in seconds)
 CACHE_SCORE_REQUEST_WEIGHT = 1 # Weight for the number of times a pack is requested
+CACHE_CHANNEL_IDS = [-1003085541461, -1003024121846] # ⚠️⚠️⚠️⚠️ ADD YOUR PRIVATE CACHE CHANNEL IDs HERE ⚠️⚠️⚠️
+MAX_FILES_PER_CACHE_CHANNEL = 95000
 
 # ------ formatting a few things ----------
 # formatting properly for use

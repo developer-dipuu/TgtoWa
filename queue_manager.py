@@ -36,6 +36,7 @@ class QueueManager:
         self.queue: List[QueueItem] = []
         self.processing: Optional[QueueItem] = None
         self.user_queues: Dict[int, List[QueueItem]] = {}  # user_id -> QueueItem
+        self.queued_set_ids: set[int] = set()
         self._lock = asyncio.Lock()
     
     async def add_to_queue(self, user_id: int, username: str, bot_reply_message_id: int, pack_input: Any,
@@ -71,6 +72,9 @@ class QueueManager:
                     insert_at = i
                     break
             self.queue.insert(insert_at, queue_item)
+            
+            # add the item's set_id
+            self.queued_set_ids.add(queue_item.sticker_set.set.id)
 
             priority_map = {SYSTEM_PRIORITY: 'system', REGULAR_USER_PRIORITY: 'regular', PREMIUM_USER_PRIORITY: 'premium'}
             priority_str = priority_map.get(priority, 'unknown')
@@ -88,7 +92,8 @@ class QueueManager:
             if item_to_remove:
                 # Remove from the main queue
                 self.queue.remove(item_to_remove)
-                
+                # remove the item's set_id
+                self.queued_set_ids.discard(item_to_remove.sticker_set.set.id)
                 # Remove from the user specific queue
                 user_specific_queue = self.user_queues.get(user_id, [])
                 if item_to_remove in user_specific_queue:
@@ -102,11 +107,12 @@ class QueueManager:
         return False
 
 
-    def get_processing_set_id(self) -> Optional[int]:
-        """Returns the set_id of the item currently being processed, or None."""
-        if self.processing:
-            return self.processing.sticker_set.set.id
-        return None
+    def is_set_id_queued(self, set_id: int) -> bool:
+        """
+        Efficiently checks if a set_id is either being processed or waiting in the queue.
+        This is an O(1) operation.
+        """
+        return set_id in self.queued_set_ids
     
 
     async def get_next_item(self) -> Optional[QueueItem]:
@@ -130,6 +136,9 @@ class QueueManager:
         """Mark current processing as complete"""
         async with self._lock:
             if self.processing and self.processing.user_id == user_id:
+                # remove the set_id from our tracking set
+                self.queued_set_ids.discard(self.processing.sticker_set.set.id)
+
                 self.processing.status = "completed" if success else "error"
                 
                 # Remove the completed item from the user's list

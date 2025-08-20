@@ -220,8 +220,17 @@ def init_db():
                     set_id INTEGER PRIMARY KEY,
                     cache_score REAL NOT NULL,
                     cached_at TIMESTAMP NOT NULL,
-                    files_path TEXT NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    message_ids TEXT NOT NULL,
                     FOREIGN KEY (set_id) REFERENCES sticker_set_stats (set_id) ON DELETE CASCADE
+                )
+            """)
+
+            # For tracking file counts in our cache channels
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cache_channels (
+                    channel_id INTEGER PRIMARY KEY,
+                    file_count INTEGER NOT NULL DEFAULT 0
                 )
             """)
 
@@ -835,43 +844,63 @@ def add_or_update_sticker_set_stats(set_id: int, short_name: str, is_emoji: bool
         logger.info(f"Updated stats for pack {short_name} (ID: {set_id}). New score: {cache_score:.2f}")
         return cache_score
 
-def is_pack_cached(set_id: int, current_title: str, current_sticker_count: int) -> Tuple[Optional[str], Optional[str]]:
+def get_or_create_cache_channel() -> Optional[int]:
+    """Finds a cache channel with space, or returns the next available one."""
+    from config import CACHE_CHANNEL_IDS, MAX_FILES_PER_CACHE_CHANNEL
+    if not CACHE_CHANNEL_IDS:
+        return None
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        for channel_id in CACHE_CHANNEL_IDS:
+            cursor.execute("SELECT file_count FROM cache_channels WHERE channel_id = ?", (channel_id,))
+            result = cursor.fetchone()
+            if result:
+                if result['file_count'] < MAX_FILES_PER_CACHE_CHANNEL:
+                    return channel_id
+            else:
+                # This channel is not in our DB yet, let's add it and use it.
+                cursor.execute("INSERT INTO cache_channels (channel_id, file_count) VALUES (?, ?)", (channel_id, 0))
+                conn.commit()
+                return channel_id
+    # If we get here, all configured channels are full
+    logger.error("All available cache channels are full!")
+    return None
+
+def update_cache_channel_file_count(channel_id: int, file_delta: int):
+    """Increments or decrements the file count for a cache channel."""
+    with get_db_connection() as conn:
+        conn.execute(
+            "UPDATE cache_channels SET file_count = file_count + ? WHERE channel_id = ?",
+            (file_delta, channel_id)
+        )
+        conn.commit()
+
+def is_pack_cached(set_id: int, current_title: str, current_sticker_count: int, is_system_process: Optional[int] = False) -> Tuple[Optional[str], Optional[int], Optional[List[int]]]:
     """
     Checks if a pack is cached and if the cache is up-to-date.
-
-    Args:
-        set_id: The ID of the sticker set.
-        current_title: The current title of the pack (from Telegram).
-        current_sticker_count: The current number of stickers in the pack (from Telegram).
-
-    Returns:
-        A tuple (status, data):
-        - ('hit', '/path/to/files') if the cache is valid.
-        - ('stale', '/path/to/files') if the cache exists but is outdated.
-        - ('miss', None) if the pack is not in the cache.
+    Returns: A tuple (status, channel_id, message_ids)
     """
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # Step 1: Check if the set_id even exists in our cache table.
-        cursor.execute("SELECT files_path FROM cached_packs WHERE set_id = ?", (set_id,))
+        cursor.execute("SELECT channel_id, message_ids FROM cached_packs WHERE set_id = ?", (set_id,))
         cache_result = cursor.fetchone()
 
         if not cache_result:
-            return 'miss', None  # It's not in the cache at all.
+            return 'miss', None, None
 
-        files_path = cache_result['files_path']
+        channel_id = cache_result['channel_id']
+        message_ids = json.loads(cache_result['message_ids'])
 
-        # Step 2: Since it's in the cache, let's check if it's stale by comparing stats.
         cursor.execute("SELECT pack_title, sticker_count FROM sticker_set_stats WHERE set_id = ?", (set_id,))
         stats_result = cursor.fetchone()
 
         if not stats_result or \
            stats_result['pack_title'] != current_title or \
            stats_result['sticker_count'] != current_sticker_count:
-            # The stats don't match! The cached version is stale.
-            logger.warning(f"Stale cache detected for pack {set_id}. Title or sticker count has changed.")
-            return 'stale', files_path
+            logger.warning(f"Stale cache detected for pack {set_id}.")
+            return 'stale', channel_id, message_ids
 
         # Step 3: It's in the cache and the stats match. It's a valid hit!
         # As a bonus, we'll update its stats to reflect this new request, keeping it relevant.
@@ -885,10 +914,160 @@ def is_pack_cached(set_id: int, current_title: str, current_sticker_count: int) 
                 pack_title=current_title,
                 sticker_count=current_sticker_count,
                 conversion_duration=pack_info['last_conversion_duration'],
-                is_system_process=False
+                is_system_process=is_system_process
             )
-        logger.info(f"Cache hit for pack {set_id} at '{files_path}'.")
-        return 'hit', files_path
+        logger.info(f"Cache hit for pack {set_id} in channel {channel_id}.")
+        return 'hit', channel_id, message_ids
+
+
+def add_to_cache(set_id: int, cache_score: float, channel_id: int, message_ids: List[int]):
+    """Adds a pack to the cache tracking table."""
+    message_ids_json = json.dumps(message_ids)
+    new_len = len(message_ids)
+    now = datetime.now().replace(microsecond=0)
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # See if this pack already exists
+        cursor.execute("SELECT channel_id, message_ids FROM cached_packs WHERE set_id = ?", (set_id,))
+        old = cursor.fetchone()
+
+        old_channel_id = old['channel_id'] if old else None
+        old_len = len(json.loads(old['message_ids'])) if old else 0
+
+
+        cursor.execute("""
+            INSERT INTO cached_packs (set_id, cache_score, cached_at, channel_id, message_ids)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(set_id) DO UPDATE SET
+                cache_score = excluded.cache_score,
+                cached_at   = excluded.cached_at,
+                channel_id  = excluded.channel_id,
+                message_ids = excluded.message_ids
+        """, (set_id, round(cache_score, 2), now, channel_id, message_ids_json))
+
+
+        # Update the file count for the channel
+        if old is None:
+            # brand new pack
+            cursor.execute(
+                "UPDATE cache_channels SET file_count = file_count + ? WHERE channel_id = ?",
+                (new_len, channel_id)
+            )
+        else:
+            if old_channel_id == channel_id:
+                # same channel, just adjust difference
+                delta = new_len - old_len
+                if delta:
+                    cursor.execute(
+                        "UPDATE cache_channels SET file_count = file_count + ? WHERE channel_id = ?",
+                        (delta, channel_id)
+                    )
+            else:
+                # moved pack from one channel to another
+                cursor.execute(
+                    "UPDATE cache_channels SET file_count = file_count - ? WHERE channel_id = ?",
+                    (old_len, old_channel_id)
+                )
+                cursor.execute(
+                    "UPDATE cache_channels SET file_count = file_count + ? WHERE channel_id = ?",
+                    (new_len, channel_id)
+                )
+        conn.commit()
+        logger.info(f"Added pack {set_id} to cache in channel {channel_id} with score {cache_score:.2f}")
+
+def remove_from_cache(set_id: int) -> Optional[Tuple[int, List[int]]]:
+    """Removes a pack from the cache table and returns its location for message deletion."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT channel_id, message_ids FROM cached_packs WHERE set_id = ?", (set_id,))
+        result = cursor.fetchone()
+        if not result:
+            return None
+        
+        channel_id = result['channel_id']
+        message_ids = json.loads(result['message_ids'])
+
+        cursor.execute("DELETE FROM cached_packs WHERE set_id = ?", (set_id,))
+        # Update the file count for the channel (decrement)
+        cursor.execute(
+            "UPDATE cache_channels SET file_count = file_count - ? WHERE channel_id = ?",
+            (len(message_ids), channel_id)
+        )
+        conn.commit()
+        logger.info(f"Removed pack {set_id} from cache DB.")
+        return channel_id, message_ids
+
+def get_cached_pack_by_id(set_id: int) -> Optional[sqlite3.Row]:
+    """Gets the channel_id and message_ids for a single cached pack by its set_id."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT channel_id, message_ids FROM cached_packs WHERE set_id = ?", (set_id,))
+        return cursor.fetchone()
+
+def get_all_cached_packs() -> List[sqlite3.Row]:
+    """Gets a list of all currently cached packs."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT set_id FROM cached_packs")
+        results =  cursor.fetchall()
+        return [result['set_id'] for result in results]
+
+def get_all_packs() -> List[sqlite3.Row]:
+    """Gets a list of all currently cached packs."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT short_name FROM sticker_set_stats")
+        results =  cursor.fetchall()
+        return [result['short_name'] for result in results]
+
+def get_set_id_by_short_name(short_name: str) -> Optional[int]:
+    """Finds a sticker set's ID by its short name in sticker_set_stats."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT set_id FROM sticker_set_stats WHERE short_name = ?", (short_name,))
+        result = cursor.fetchone()
+        return result['set_id'] if result else None
+    
+def get_top_packs_by_score(limit: int) -> List[sqlite3.Row]:
+    """Gets the top N sticker packs ordered by their cache score."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT short_name FROM sticker_set_stats ORDER BY cache_score DESC LIMIT ?",
+            (limit,)
+        )
+        #returns a list of shortname strings
+        return [row['short_name'] for row in cursor.fetchall()]
+
+
+def get_non_cached_packs(limit: Optional[int] = None) -> List[str]:
+    """
+    Gets a list of pack short_names from sticker_set_stats that are not in the cached_packs table.
+    Results are ordered by cache_score descending to prioritize popular packs.
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # find the entries in the sticker_set_stats that are not in cached_packs (on the basis of set_id)
+        query = """
+            SELECT sss.short_name
+            FROM sticker_set_stats sss
+            LEFT JOIN cached_packs cp ON sss.set_id = cp.set_id
+            WHERE cp.set_id IS NULL
+            ORDER BY sss.cache_score DESC
+        """
+        
+        params = []
+        if limit and isinstance(limit, int) and limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
+            
+        cursor.execute(query, params)
+        
+        # Returns a simple list of short_name strings
+        return [row['short_name'] for row in cursor.fetchall()]
 
 def get_cache_info() -> Tuple[int, Optional[sqlite3.Row]]:
     """
@@ -906,57 +1085,7 @@ def get_cache_info() -> Tuple[int, Optional[sqlite3.Row]]:
             lowest_item = cursor.fetchone()
             
         return count, lowest_item
-
-def add_to_cache(set_id: int, cache_score: float, files_path: str):
-    """Adds a pack to the cache tracking table."""
-    with get_db_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO cached_packs (set_id, cache_score, cached_at, files_path) VALUES (?, ?, ?, ?)",
-            (set_id, round(cache_score, 2), datetime.now().replace(microsecond=0), files_path)
-        )
-        conn.commit()
-        logger.info(f"Added pack {set_id} to cache with score {cache_score:.2f}")
-
-def remove_from_cache(set_id: int):
-    """Removes a pack from the cache tracking table."""
-    with get_db_connection() as conn:
-        conn.execute("DELETE FROM cached_packs WHERE set_id = ?", (set_id,))
-        conn.commit()
-        logger.info(f"Removed pack {set_id} from cache.")
-
-def get_all_cached_packs() -> List[sqlite3.Row]:
-    """Gets a list of all currently cached packs."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT set_id, files_path FROM cached_packs")
-        return cursor.fetchall()
-
-def get_set_id_by_short_name(short_name: str) -> Optional[int]:
-    """Finds a sticker set's ID by its short name in sticker_set_stats."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT set_id FROM sticker_set_stats WHERE short_name = ?", (short_name,))
-        result = cursor.fetchone()
-        return result['set_id'] if result else None
-
-def get_cached_pack_by_id(set_id: int) -> Optional[sqlite3.Row]:
-    """Gets the file path for a single cached pack by its set_id."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT files_path FROM cached_packs WHERE set_id = ?", (set_id,))
-        return cursor.fetchone()
     
-def get_top_packs_by_score(limit: int) -> List[sqlite3.Row]:
-    """Gets the top N sticker packs ordered by their cache score."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT short_name FROM sticker_set_stats ORDER BY cache_score DESC LIMIT ?",
-            (limit,)
-        )
-        #returns a list of shortname strings
-        return [row['short_name'] for row in cursor.fetchall()]
-
 def calculate_and_store_popular_packs():
     """
     Calculates the top 10 daily and top 50 all-time packs and stores them.
