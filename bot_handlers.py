@@ -661,7 +661,7 @@ class BotHandlers:
         # run the conversion with a timeout (either 60 sec or 2x the estimated time)
         conversion_start_time = time.monotonic()
         try:
-            wastickers_files = await asyncio.wait_for(self.converter.create_wastickers_pack(sticker_set, item.username), timeout=processing_timeout)
+            wastickers_files = await asyncio.wait_for(self.converter.create_wastickers_pack(sticker_set, self.bot_username), timeout=processing_timeout)
         except asyncio.TimeoutError:
             status_for_db = "failed_conversion_timeout"
             logger.error(f"Conversion timed out while creating .wasticker files for user {item.user_id}. Log ID: {item.log_id}")
