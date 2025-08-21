@@ -409,7 +409,7 @@ class BotHandlers:
         # --- stale cache T~T ---
         elif cache_status == 'stale':
             logger.warning(f"Stale cache found for pack {set_id}. Deleting old cache before re-converting.")
-            self.delete_cache(set_id)
+            await self.delete_cache(set_id)
 
         return False # for cache miss or stale cache or inconsistent cache files 
     
