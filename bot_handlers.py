@@ -724,7 +724,7 @@ class BotHandlers:
         )
 
         # ------------UPLOAD -------------
-        # If we get here conversion was successful (caching logic too) now we upload to channel for cache
+        # If we get here conversion was successful now we upload to channel for cache or if cahing diabled upload directly
         cached_messages = []
         target_cache_channel = None
         if self.cache_enabled:
@@ -941,6 +941,10 @@ class BotHandlers:
                 try:                    
                     status_for_db = await self._run_conversion(item, item.is_silent_mode)
 
+                except UserIsBlockedError:
+                    status_for_db = "blocked_by_user"
+                    logger.error(f"User has blocked the bot! Cannot proceed further, skiped.")
+                    
                 except Exception as e:
                     status_for_db = "failed_exception"
                     logger.error(f"An exception occurred while processing queue item for user {item.user_id}: {e}", exc_info=True)
@@ -1047,7 +1051,8 @@ class BotHandlers:
             f"**Conversions Log**:\n"
             f"  • Total Requests: `{stats['total']}`\n"
             f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
-            f"  • ❌ Failed: `{stats['failed']}`"
+            f"  • ❌ Failed: `{stats['failed']}`\n"
+            f"  • 🚫 Cancelled: `{stats['cancelled']}`"
         )
         
         await event.reply(message)
@@ -1228,6 +1233,7 @@ class BotHandlers:
             role=role,
             succeeded=stats['succeeded'],
             failed=stats['failed'],
+            cancelled=stats['cancelled'],
             total=stats['total']
         )
 
@@ -1543,10 +1549,12 @@ class BotHandlers:
             f"  • Banned Users: `{stats['total_banned']}`\n\n"
             f"⚙️ **Conversions (Overall):**\n"
             f"  • ✅ Succeeded: `{stats['total_succeeded']}`\n"
-            f"  • ❌ Failed: `{stats['total_failed']}`\n\n"
+            f"  • ❌ Failed: `{stats['total_failed']}`\n"
+            f"  • 🚫 Cancelled: `{stats['total_cancelled']}`\n\n"
             f"📈 **Conversions (Today):**\n"
             f"  • ✅ Succeeded: `{stats['today_succeeded']}`\n"
-            f"  • ❌ Failed: `{stats['today_failed']}`\n\n"
+            f"  • ❌ Failed: `{stats['today_failed']}`\n"
+            f"  • 🚫 Cancelled: `{stats['today_cancelled']}`\n\n"
             f"⏳ **Live Queue Status:**\n"
             f"  • Waiting: `{q_stats['total_waiting']}`\n"
             f"  • Currently Processing: `{processing_user}`"
@@ -1554,7 +1562,8 @@ class BotHandlers:
 
         buttons = [
             [Button.inline("⭐ Premium Members", b"gstats_premium"), Button.inline("🏆 Top 50 Users", b"gstats_top_users")],
-            [Button.inline("👮‍♂️ Admins List", b"gstats_admins"), Button.inline("🚫 Banned List", b"gstats_banned")]
+            [Button.inline("👮‍♂️ Admins List", b"gstats_admins"), Button.inline("🚫 Banned List", b"gstats_banned")],
+            [Button.inline("🔄 Refresh", b"gstats_refresh")]
         ]
         return message, buttons
 
@@ -1834,6 +1843,7 @@ class BotHandlers:
         for log_id in jobs_to_cancel:
             # The OWNER_ID is used as the user_id for system tasks
             if await queue_manager.cancel_item(user_id=SYSTEM_USER_ID, log_id=log_id):
+                db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(), 0.0)
                 cancelled_count += 1
 
         self.active_refresh_jobs.clear()
@@ -2066,6 +2076,7 @@ class BotHandlers:
         jobs_to_cancel = list(self.active_add_jobs)
         for log_id in jobs_to_cancel:
             if await queue_manager.cancel_item(user_id=SYSTEM_USER_ID, log_id=log_id):
+                db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(), 0.0)
                 cancelled_count += 1
 
         self.active_add_jobs.clear()
@@ -2405,7 +2416,8 @@ class BotHandlers:
             f"**Conversions Log**:\n"
             f"  • Total Requests: `{stats['total']}`\n"
             f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
-            f"  • ❌ Failed: `{stats['failed']}`"
+            f"  • ❌ Failed: `{stats['failed']}`\n"
+            f"  • 🚫 Cancelled: `{stats['cancelled']}`"
         )
         logger.info(f"Stats of user {target_user.id} has been fetched by admin: {event.sender_id}")
         await event.reply(message)
@@ -2546,6 +2558,7 @@ class BotHandlers:
             log_id = int(data.split("_", 2)[2])
             success = await queue_manager.cancel_item(user_id, log_id)
             if success:
+                db.update_conversion_log(log_id, "cancelled", datetime.now(), 0.0)
                 await event.edit("✅ Your request has been successfully cancelled.")
             else:
                 await event.edit("❌ Could not cancel. The item may be processing or completed.")
@@ -2569,7 +2582,7 @@ class BotHandlers:
             try:
                 await event.edit(message, buttons=buttons)
             except Exception as e:
-                logger.warning(f"Could not edit the check_queue message: {e}")
+                logger.debug(f"Could not edit the check_queue message: {e}")
         
         elif data == "help":
             await event.answer()
@@ -2723,6 +2736,14 @@ class BotHandlers:
             await event.answer()
 
             action = data.split("_", 1)[1]
+
+            if action == "refresh":
+                message, buttons = await self._get_gstats_message_and_buttons()
+                try:
+                    await event.edit(message, buttons=buttons)
+                except Exception as e:
+                    logger.debug(f"Ignoring gstats refresh error (likely not modified): {e}")
+                    pass
 
             if action == "premium":
                 users = db.get_gstats_premium_list()

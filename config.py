@@ -61,7 +61,7 @@ DB_PATH = f"{DATA_DIR}/bot_data.db" # its by default in the data directory but i
 CACHE_ENABLED = True # To use cache or not, owner can change it using the bot too but on bot restarts it will change to this default value
 CACHE_SCORE_TIME_WEIGHT = 1.5   # Weight for conversion duration (in seconds)
 CACHE_SCORE_REQUEST_WEIGHT = 1 # Weight for the number of times a pack is requested
-CACHE_CHANNEL_IDS = [-1003085541461, -1003024121846] # ⚠️⚠️⚠️⚠️ ADD YOUR PRIVATE CACHE CHANNEL IDs HERE ⚠️⚠️⚠️
+CACHE_CHANNEL_IDS = [-1234567890123, -1234567890123] # ⚠️⚠️⚠️⚠️ REPLACE YOUR PRIVATE CACHE CHANNEL IDs HERE (I recommend you to add two of them)⚠️⚠️⚠️
 MAX_FILES_PER_CACHE_CHANNEL = 95000
 
 # ------ formatting a few things ----------
@@ -197,5 +197,6 @@ CONTACT_ADMIN_NOTIFICATION_HEADER = """
 - <b>Stats:</b>
 ✅ Succeeded: <code>{succeeded}</code>
 ❌ Failed: <code>{failed}</code>
+🚫 Cancelled: <code>{cancelled}</code>
 📍 Total: <code>{total}</code>
 """

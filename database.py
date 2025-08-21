@@ -45,6 +45,7 @@ def init_db():
                     total_requests INTEGER DEFAULT 0,
                     succeeded_requests INTEGER DEFAULT 0,
                     failed_requests INTEGER DEFAULT 0,
+                    cancelled_requests INTEGER DEFAULT 0,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             """)
@@ -325,11 +326,11 @@ def get_user_stats(user_id: int) -> dict:
     """Gets conversion stats for a specific user from the optimized table."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT total_requests, succeeded_requests, failed_requests FROM user_stats WHERE user_id = ?", (user_id,))
+        cursor.execute("SELECT total_requests, succeeded_requests, failed_requests, cancelled_requests FROM user_stats WHERE user_id = ?", (user_id,))
         stats = cursor.fetchone()
         if stats:
-            return {"total": stats['total_requests'], "succeeded": stats['succeeded_requests'], "failed": stats['failed_requests']}
-    return {"total": 0, "succeeded": 0, "failed": 0}
+            return {"total": stats['total_requests'], "succeeded": stats['succeeded_requests'], "failed": stats['failed_requests'], "cancelled": stats['cancelled_requests']}
+    return {"total": 0, "succeeded": 0, "failed": 0, "cancelled": 0}
 
 # fetching all user ids from database
 def get_all_user_ids() -> list[int]:
@@ -370,14 +371,15 @@ def get_gstats() -> dict:
         cursor.execute("SELECT COUNT(*) FROM premium_users WHERE expiry_date > ?", (datetime.now().replace(microsecond=0),))
         active_premium = cursor.fetchone()[0]
         
-        cursor.execute("SELECT SUM(succeeded_requests), SUM(failed_requests) FROM user_stats")
-        total_succeeded, total_failed = cursor.fetchone()
+        cursor.execute("SELECT SUM(succeeded_requests), SUM(failed_requests), SUM(cancelled_requests) FROM user_stats")
+        total_succeeded, total_failed, total_cancelled = cursor.fetchone()
         
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         cursor.execute("SELECT status, COUNT(*) FROM conversion_log WHERE request_time >= ? GROUP BY status", (today_start,))
         today_stats_raw = cursor.fetchall()
         today_succeeded = sum(row[1] for row in today_stats_raw if row[0].startswith('completed'))
         today_failed = sum(row[1] for row in today_stats_raw if row[0].startswith('failed'))
+        today_cancelled = sum(row[1] for row in today_stats_raw if row[0].startswith('cancelled'))
         
         return {
             "total_users": total_users,
@@ -386,8 +388,10 @@ def get_gstats() -> dict:
             "active_premium": active_premium,
             "total_succeeded": total_succeeded or 0,
             "total_failed": total_failed or 0,
+            "total_cancelled": total_cancelled or 0,
             "today_succeeded": today_succeeded,
-            "today_failed": today_failed
+            "today_failed": today_failed,
+            "today_cancelled": today_cancelled
         }
 
 def get_gstats_premium_list() -> list:
@@ -455,12 +459,14 @@ def update_conversion_log(log_id: int, status: str, completion_time: datetime, d
             user_id = result['user_id']
             # Increment the correct counter
             if status.startswith("completed"):
-                cursor.execute("UPDATE user_stats SET succeeded_requests = succeeded_requests + 1 WHERE user_id = ?", (user_id,))
-            else: # "failed"
-                cursor.execute("UPDATE user_stats SET failed_requests = failed_requests + 1 WHERE user_id = ?", (user_id,))
-            # Always increment total requests
-            cursor.execute("UPDATE user_stats SET total_requests = total_requests + 1 WHERE user_id = ?", (user_id,))
-
+                cursor.execute("UPDATE user_stats SET succeeded_requests = succeeded_requests + 1, total_requests = total_requests + 1 WHERE user_id = ?", (user_id,))
+            elif status.startswith("failed"):
+                cursor.execute("UPDATE user_stats SET failed_requests = failed_requests + 1, total_requests = total_requests + 1 WHERE user_id = ?", (user_id,))
+            # If status is cancelled or anything else, we will not update the user stats.
+            elif status.startswith("cancelled"):
+                cursor.execute("UPDATE user_stats SET cancelled_requests = cancelled_requests + 1, total_requests = total_requests + 1 WHERE user_id = ?", (user_id,))
+            else:
+                cursor.execute("UPDATE user_stats SET total_requests = total_requests + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
 
 
