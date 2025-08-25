@@ -20,7 +20,6 @@ class QueueItem:
     user_id: int
     username: str
     bot_reply_message_id: int
-    pack_input: Any  # Can be a string (short_name) or an InputStickerSet object
     sticker_set: Any
     estimated_seconds: float
     log_id: int
@@ -31,6 +30,10 @@ class QueueItem:
     is_silent_mode: bool = False
     status: str = "waiting"  # waiting, processing, completed, error
 
+    custom_title: Optional[str] = None
+    custom_author: Optional[str] = None
+
+
 class QueueManager:
     def __init__(self):
         self.queue: List[QueueItem] = []
@@ -39,9 +42,10 @@ class QueueManager:
         self.queued_set_ids: set[int] = set()
         self._lock = asyncio.Lock()
     
-    async def add_to_queue(self, user_id: int, username: str, bot_reply_message_id: int, pack_input: Any,
-                           sticker_set: Any, estimated_seconds: float, log_id: int, priority: int,
-                            event: events.NewMessage.Event, is_cache_suspicious: bool, is_silent_mode: bool = False) -> int:
+    async def add_to_queue(self, user_id: int, username: str, bot_reply_message_id: int,sticker_set: Any, 
+                           estimated_seconds: float, log_id: int, priority: int, event: events.NewMessage.Event, 
+                           is_cache_suspicious: bool, is_silent_mode: bool = False, 
+                            custom_title: Optional[str] = None, custom_author: Optional[str] = None) -> int:
         """Add user to queue and return position"""
         async with self._lock:
             
@@ -49,7 +53,6 @@ class QueueManager:
                 user_id=user_id,
                 username=username,
                 bot_reply_message_id=bot_reply_message_id,
-                pack_input=pack_input,
                 sticker_set=sticker_set,
                 estimated_seconds=estimated_seconds,
                 log_id=log_id,
@@ -57,7 +60,9 @@ class QueueManager:
                 priority=priority,
                 event=event,
                 is_cache_suspicious=is_cache_suspicious,
-                is_silent_mode=is_silent_mode
+                is_silent_mode=is_silent_mode,
+                custom_title=custom_title,
+                custom_author=custom_author
             )
 
             # Add to the user specific tracking list
@@ -78,7 +83,7 @@ class QueueManager:
 
             priority_map = {SYSTEM_PRIORITY: 'system', REGULAR_USER_PRIORITY: 'regular', PREMIUM_USER_PRIORITY: 'premium'}
             priority_str = priority_map.get(priority, 'unknown')
-            logger.info(f"Added {priority_str} user {username} (ID: {user_id}) to queue for pack: {pack_input}")
+            logger.info(f"Added {priority_str} user {username} (ID: {user_id}) to queue for pack: {sticker_set.set.short_name}")
             
             # Return the position of the newly added item
             return self.get_queue_position(user_id, specific_item=queue_item)

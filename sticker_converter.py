@@ -52,7 +52,7 @@ class StickerConverter:
             return False
     
     # it is the one who creates all wastickers file for a sticker pack  by calling other helpers and return to the caller _run_conversion in bot_handlers
-    async def create_wastickers_pack(self, sticker_set, author_name: str) -> List[str]:
+    async def create_wastickers_pack(self, sticker_set, author_name: str, custom_title: Optional[str] = None) -> List[str]:
         """Create .wastickers file(s) from a sticker/emoji set."""
         wastickers_files = []
         temp_dir = create_temp_directory()
@@ -61,19 +61,20 @@ class StickerConverter:
             stickers = sticker_set.documents
             total_stickers = len(stickers)
             num_packs = (total_stickers + MAX_STICKERS_PER_PACK - 1) // MAX_STICKERS_PER_PACK
-            
-            sanitized_base_filename = sanitize_filename(sticker_set.set.title)
+            base_pack_title = custom_title if custom_title and custom_title.strip() else sticker_set.set.title
+
+            sanitized_base_filename = sanitize_filename(custom_title if custom_title and custom_title.strip() else sticker_set.set.title)
             for pack_idx in range(num_packs):
                 start_idx = pack_idx * MAX_STICKERS_PER_PACK
                 end_idx = min(start_idx + MAX_STICKERS_PER_PACK, total_stickers)
                 pack_stickers = stickers[start_idx:end_idx]
 
-                pack_title = sticker_set.set.title
+                pack_title = base_pack_title
                 final_filename = sanitized_base_filename
 
                 if num_packs > 1:
                     pack_title += f" (part {pack_idx + 1})"
-                    final_filename += f" (part {pack_idx + 1})" # Append number to sanitized name
+                    final_filename += f" (part {pack_idx + 1})"
                 
                 wastickers_file = await self._create_single_wastickers_pack(
                     pack_stickers, 
