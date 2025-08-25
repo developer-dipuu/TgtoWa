@@ -45,6 +45,8 @@ class BotHandlers:
         self.cache_enabled = CACHE_ENABLED
         self.user_callback_locks = {}
         self.user_callback_locks_lock = asyncio.Lock()
+        self._user_processing_lock = asyncio.Lock()
+        self._users_adding_to_queue = set()
         self.reply_locks = {}
         self.reply_locks_lock = asyncio.Lock()
         self.pending_actions = {}
@@ -946,88 +948,95 @@ class BotHandlers:
             return
 
         is_premium = db.is_premium(user.id)
-        current_queue_count = await queue_manager.get_user_queue_count(user.id)
         limit = MAX_CONCURRENT_PREMIUM_REQUESTS if is_premium else MAX_CONCURRENT_REGULAR_REQUESTS
 
         # max queue limit
-        if current_queue_count >= limit:
+        async with self._user_processing_lock:
+            current_queue_count = await queue_manager.get_user_queue_count(user.id)
+            realistic_position = current_queue_count + (1 if user.id in self._users_adding_to_queue else 0)
+            if realistic_position >= limit:
+                if is_premium:
+                    message = (f"⏳ **You've reached your limit!**\n\n"
+                            f"You currently have {realistic_position}/{limit} items in the queue. "
+                            f"Please wait for one to complete before adding more.")
+                else:
+                    message = "⏳ You're already in the queue! Please wait for your current request to complete."
+
+                asyncio.create_task(event.reply(message, buttons=[[Button.inline("📊 Check Queue", b"check_queue")]]))
+                return
+            
+            # if check passes mark user as adding to queue
+            self._users_adding_to_queue.add(user.id)
+        
+        try:        
+            # now time to extract pack details based on the type of message sent
+            pack_input = None
+            
+            if event.text:
+                # if a text 
+                pack_input = extract_pack_name_from_url(event.text)
+                if not pack_input:
+                    await event.reply(
+                        "❌ **Invalid input!**\n\n"
+                        "Please send a valid Telegram sticker or emoji pack link, "
+                        "or forward a sticker/emoji from the pack you want to convert."
+                    )
+                    return
+
+            elif event.sticker:
+                # if its a sticker
+                for attr in event.sticker.attributes:
+                    if isinstance(attr, DocumentAttributeSticker):
+                        pack_input = attr.stickerset
+                        break
+                
+                if not pack_input:
+                    await event.reply(
+                        "❌ This sticker doesn't seem to belong to a pack I can access.\n\nPlease forward a sticker from a public sticker pack."
+                    )
+                    return
+
+            elif event.document and hasattr(event.document, 'attributes'):
+                # if anything else is sent check if its a custom emoji
+                for attr in event.document.attributes:
+                    if isinstance(attr, DocumentAttributeCustomEmoji):
+                        pack_input = attr.stickerset
+                        break
+                
+                if not pack_input:
+                    # if that document aint an emoji
+                    await event.reply(
+                        "❌ **Invalid input!**\n\n"
+                        "Please send a valid Telegram sticker or emoji pack link, "
+                        "or forward a sticker/emoji from the pack you want to convert."
+                    )
+                    return
+                
+            # Fetch the sticker/emoji set to get its actual name and type
+            try:
+                sticker_set = await self.network_task.get_sticker_set(pack_input)
+
+                if not sticker_set or not sticker_set.documents:
+                    logger.error(f"Could not fetch a valid sticker set for input: {pack_input}")
+                    await event.reply("❌ I couldn't find that sticker pack. It might be private, invalid, or empty. Please try another one!")
+                    return
+
+            except Exception as e:
+                    logger.error(f"Error fetching set name for user {user.id}: {e}")
+
             if is_premium:
-                message = (f"⏳ **You've reached your limit!**\n\n"
-                        f"You currently have {current_queue_count}/{limit} items in the queue. "
-                        f"Please wait for one to complete before adding more.")
+                # For premium users we use special customizayion flow
+                await self._start_customization_flow(event, sticker_set)
             else:
-                message = "⏳ You're already in the queue! Please wait for your current request to complete."
+                # For regular users check cache and queue directly
+                if self.cache_enabled and await self.check_cache(event, sticker_set): # cache hit
+                    return
+                # cache miss we got to queue it 
+                await self._queue_sticker_pack(event, sticker_set, is_premium=False)
 
-            await event.reply(message, buttons=[[Button.inline("📊 Check Queue", b"check_queue")]])
-            return
-        
-        # now time to extract pack details based on the type of message sent
-        pack_input = None
-        pack_display_name = "Unknown Pack"
-        is_emoji_pack = False
-        
-        if event.text:
-            # if a text 
-            pack_input = extract_pack_name_from_url(event.text)
-            if not pack_input:
-                await event.reply(
-                    "❌ **Invalid input!**\n\n"
-                    "Please send a valid Telegram sticker or emoji pack link, "
-                    "or forward a sticker/emoji from the pack you want to convert."
-                )
-                return
-
-        elif event.sticker:
-            # if its a sticker
-            for attr in event.sticker.attributes:
-                if isinstance(attr, DocumentAttributeSticker):
-                    pack_input = attr.stickerset
-                    break
-            
-            if not pack_input:
-                await event.reply(
-                    "❌ This sticker doesn't seem to belong to a pack I can access.\n\nPlease forward a sticker from a public sticker pack."
-                )
-                return
-
-        elif event.document and hasattr(event.document, 'attributes'):
-            # if anything else is sent check if its a custom emoji
-            for attr in event.document.attributes:
-                if isinstance(attr, DocumentAttributeCustomEmoji):
-                    pack_input = attr.stickerset
-                    break
-            
-            if not pack_input:
-                # if that document aint an emoji
-                await event.reply(
-                    "❌ **Invalid input!**\n\n"
-                    "Please send a valid Telegram sticker or emoji pack link, "
-                    "or forward a sticker/emoji from the pack you want to convert."
-                )
-                return
-            
-        # Fetch the sticker/emoji set to get its actual name and type
-        try:
-            sticker_set = await self.network_task.get_sticker_set(pack_input)
-
-            if not sticker_set or not sticker_set.documents:
-                 logger.error(f"Could not fetch a valid sticker set for input: {pack_input}")
-                 await event.reply("❌ I couldn't find that sticker pack. It might be private, invalid, or empty. Please try another one!")
-                 return
-
-        except Exception as e:
-                logger.error(f"Error fetching set name for user {user.id}: {e}")
-
-        if is_premium:
-            # For premium users we use special customizayion flow
-            await self._start_customization_flow(event, sticker_set)
-        else:
-            # For regular users check cache and queue directly
-            if self.cache_enabled and await self.check_cache(event, sticker_set): # cache hit
-                return
-            # cache miss we got to queue it 
-            await self._queue_sticker_pack(event, sticker_set, is_premium=False)
-        
+        finally:
+            # remove user from adding queue set
+            self._users_adding_to_queue.discard(user.id)
 
 
 
