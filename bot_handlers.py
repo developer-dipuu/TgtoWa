@@ -1496,6 +1496,7 @@ class BotHandlers:
             f"<b>Premium Benefits Include:</b>\n"
             f"  • 🚀 <b>Priority Queue:</b> Your requests jump to the front of the line.\n"
             f"  • ⚙️ <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.\n"
+            f"  • ✍️ <b>Custom Pack Details:</b> Set your own custom title and author name for your packs.\n"
             f"  • 💬 <b>Priority Support:</b> Get faster help in the support group."
         )
 
