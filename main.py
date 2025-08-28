@@ -10,6 +10,7 @@ from telethon import TelegramClient
 from config import API_ID, API_HASH, BOT_TOKEN, DATA_DIR
 from bot_handlers import BotHandlers
 from database import init_db
+from notification_manager import NotificationManager
 
 # Configure logging
 logging.basicConfig(
@@ -18,11 +19,26 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+notification_manager_instance: NotificationManager = None
+
+def handle_exception(loop, context):
+    """Global exception handler for the asyncio loop to catch unhandled errors."""
+    exc = context.get("exception", context["message"])
+    logger.critical(f"Caught an unhandled exception in a task: {exc}", exc_info=exc)
+    
+    if notification_manager_instance:
+        # Create a coroutine to send the notification via our manager
+        coro = notification_manager_instance.send_uncaught_exception(
+            (type(exc), exc, exc.__traceback__)
+        )
+        # Schedule the coroutine to run safely on the loop
+        asyncio.run_coroutine_threadsafe(coro, loop)
 
 async def main():
     """
     Initializes the Telethon client, registers handlers, and runs the bot.
     """
+    global notification_manager_instance
     os.makedirs(DATA_DIR, exist_ok=True)
     # Initilize the database
     init_db()
@@ -35,11 +51,19 @@ async def main():
     try:
         # Start the client with the bot token
         await client.start(bot_token=BOT_TOKEN)
+
+        # Initialize NotificationManager AFTER client starts and is ready
+        notification_manager_instance = NotificationManager(client)
+        
+        # Set the custom exception handler for the currently running asyncio loop
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(handle_exception)
+
         bot_info = await client.get_me()
         logger.info(f"Bot started successfully as @{bot_info.username}!")
 
         # Initialize handlers with the client instance and bot_info
-        handlers = BotHandlers(client, bot_info)
+        handlers = BotHandlers(client, bot_info, notification_manager_instance)
         # Register all event handlers
         handlers.register_handlers()
 

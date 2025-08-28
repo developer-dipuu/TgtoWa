@@ -26,6 +26,7 @@ SUPPORT_GROUP = "@your_support_group_here"
 
 
 # if you're done editing this far the only thing must to edit is the CACHE_CHANNEL_IDS (if the CACHE_ENABLED is True, that is by default and recommended).
+# Recommended: Also create a new group and replace its ID in NOTIFICATION_GROUP_ID, this is required to recive failure notifications if something goes wrong. 
 # You may review and adjust "Timeouts and processing limits" section as per your connection speed and needs but dont change other shits unless you know what you are doing)
 
 
@@ -75,6 +76,58 @@ REQUIRED_CHANNELS_FORMATTED = [
 _channel_list_str = "\n".join([f"• <b><a href=\"{channel[1]}\">{html.escape(channel[0])}</a></b>" for channel in REQUIRED_CHANNELS_FORMATTED])
 
 
+# ========= Notification Settings =============
+
+# The chat ID of the group where all notifications will be sent. Must be a negative number for groups.
+# Get it by sending group to @username_to_id_bot
+NOTIFICATION_GROUP_ID = -4842560114 # ⚠️ REPLACE WITH YOUR NOTIFICATION GROUP ID
+
+# A list of admin/owner user IDs to mention in critical notifications.
+# These users MUST be in the NOTIFICATION_GROUP_ID group.
+ADMINS_TO_MENTION = [OWNER_ID] # You can add more admin user IDs here, like [OWNER_ID, 1235642345, 621425890]
+
+NOTIFICATIONS = {
+    # For conversion failures during processing.
+    "conversion_failure": {
+        "enabled": True,
+        "mention_admins": True,
+    },
+    # For unhandled exceptions that could crash a background task. I recommend you better keep it on.
+    "uncaught_exception": {
+        "enabled": True,
+        "mention_admins": True,
+    },
+    # For when the bot fails to delete files from a cache channel.
+    "cache_delete_failure": {
+        "enabled": True,
+        "mention_admins": False,
+    },
+    # For any other message deletion failures. Can be messsy so disabled by default.(change if you care for everything)
+    "message_delete_failure": {
+        "enabled": False,
+        "mention_admins": False,
+    }
+}
+
+# ============ Backup Settings ================
+
+BACKUP_ENABLED = True # Master switch for all backups
+
+# The chat ID for backups is the same as NOTIFICATION_GROUP_ID by default.
+# You can override it here if you want a separate channel for backups.
+BACKUP_GROUP_ID = NOTIFICATION_GROUP_ID
+
+BACKUPS = {
+    "database": {
+        "enabled": True, # Toggle for database backups
+    },
+    "logs": {
+        "enabled": True, # Toggle for log file backups
+    }
+}
+
+
+#===================== You need not to change thses things unless you want to edit default messages ======================================
 
 #================ Messages ===============
 

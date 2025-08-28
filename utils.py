@@ -4,10 +4,13 @@ Utility functions for the Telegram Sticker/Emoji to WhatsApp Sticker Converter B
 
 import os
 import re
+import zipfile
+import glob
 import asyncio
 import tempfile
 import shutil
 import logging
+from datetime import datetime
 from typing import List, Optional, Tuple, Any
 from telethon import TelegramClient
 from telethon.tl.types import InputStickerSetShortName, InputStickerSetID, Document
@@ -18,7 +21,8 @@ import io
 import emoji
 import regex
 
-from config import DOWNLOAD_TIMEOUT, UPLOAD_TIMEOUT, MAX_DOWNLOAD_RETRIES, OWNER_ID
+from config import (DOWNLOAD_TIMEOUT, UPLOAD_TIMEOUT, MAX_DOWNLOAD_RETRIES, OWNER_ID, 
+                    BACKUP_ENABLED, BACKUPS, BACKUP_GROUP_ID, DB_PATH, LOG_DIR, TEMP_DIR)
 
 logger = logging.getLogger(__name__)
 
@@ -209,39 +213,101 @@ class NetworkTask:
         return messages
 
 
-    # async def upload_files(self, file_paths: List[str], pack_url: str, pack_title: str, chat_id: int):
-    #     async with asyncio.TaskGroup() as tg:
-    #         for i, file_path in enumerate(file_paths):
-    #             caption = f"📦 <a href=\"{pack_url}\">{pack_title}</a> - Part {i+1}/{len(file_paths)}\nSize: {format_file_size(os.path.getsize(file_path))}"
-    #             tg.create_task(self._upload_worker(chat_id, file_path, caption, index=i))
-                           
-async def notify_owner_of_failure(client, user_id: int, user_display_name: str, log_id: int, sticker_set, error_type: str, error_message: str):
-    """Sends a detailed failure notification to the bot owner."""
-    try:
-        # Reconstruct the pack URL for easy checking
-        pack_url = "N/A"
-        if sticker_set and sticker_set.set:
-            is_emoji = sticker_set.set.emojis
-            pack_type = "addemoji" if is_emoji else "addstickers"
-            pack_url = f"https://t.me/{pack_type}/{sticker_set.set.short_name}"
+class BackupManager:
+    """Handles the creation and upload of daily backups."""
+    def __init__(self, client: TelegramClient):
+        self.client = client
 
-        message = (
-            f"🚨 **Conversion Failure Notification** 🚨\n\n"
-            f"A conversion has failed. Here are the details:\n\n"
-            f"👤 **User:** {user_display_name} (`{user_id}`)\n"
-            f"📦 **Pack URL:** **[Click Here]({pack_url})**\n"
-            f"📄 **Log ID:** `{log_id}`\n"
-            f"🛑 **Error Type:** `{error_type}`\n"
-            f"🗒️ **Error Details:**\n"
-            f"```\n{error_message}\n```\n\n"
-            f"The failure has been logged to the database."
-        )
+    async def _create_zip_archive(self, files_to_add: list, zip_path: str):
+        """Creates a zip archive from a list of files in a non-blocking way."""
+        def zip_files():
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for file_path in files_to_add:
+                    if os.path.exists(file_path):
+                        # arcname ensures we dont store the full directory structure
+                        arcname = os.path.basename(file_path)
+                        zf.write(file_path, arcname)
+        
+        await asyncio.to_thread(zip_files)
 
-        await client.send_message(OWNER_ID, message, link_preview=False)
-        logger.info(f"Sent failure notification to owner for log_id {log_id}")
+    async def _backup_database(self):
+        """Handles zipping and uploading the database file."""
+        logger.info("Starting database backup...")
+        zip_path = None
+        try:
+            db_file_path = os.path.realpath(os.path.expanduser(DB_PATH))
+            if not os.path.exists(db_file_path):
+                logger.error("Database backup failed: DB file not found.")
+                return
 
-    except Exception as e:
-        logger.error(f"CRITICAL: Failed to send failure notification to owner for log_id {log_id}: {e}")
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            zip_filename = f"db_backup_{date_str}.zip"
+            zip_path = os.path.join(TEMP_DIR, zip_filename)
+
+            await self._create_zip_archive([db_file_path], zip_path)
+
+            caption = f"#db_backup\nDate: {date_str}"
+            await self.client.send_file(
+                BACKUP_GROUP_ID,
+                file=zip_path,
+                caption=caption
+            )
+            logger.info("Successfully uploaded database backup.")
+
+        except Exception as e:
+            logger.error(f"Database backup process failed: {e}", exc_info=True)
+        finally:
+            if zip_path and os.path.exists(zip_path):
+                os.remove(zip_path)
+
+    async def _backup_logs(self):
+        """Handles zipping and uploading log files."""
+        logger.info("Starting log files backup...")
+        zip_path = None
+        try:
+            log_dir_path = os.path.realpath(os.path.expanduser(LOG_DIR))
+            if not os.path.isdir(log_dir_path):
+                logger.warning(f"Log backup skipped: Log directory '{log_dir_path}' not found.")
+                return
+
+            log_files = glob.glob(os.path.join(log_dir_path, '*'))
+            if not log_files:
+                logger.info("Log backup skipped: No log files found.")
+                return
+
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            zip_filename = f"logs_backup_{date_str}.zip"
+            zip_path = os.path.join(TEMP_DIR, zip_filename)
+
+            await self._create_zip_archive(log_files, zip_path)
+
+            caption = f"#log_backup\nDate: {date_str}"
+            await self.client.send_file(
+                BACKUP_GROUP_ID,
+                file=zip_path,
+                caption=caption
+            )
+            logger.info("Successfully uploaded log files backup.")
+
+        except Exception as e:
+            logger.error(f"Log files backup process failed: {e}", exc_info=True)
+        finally:
+            if zip_path and os.path.exists(zip_path):
+                os.remove(zip_path)
+
+    async def run_backup(self):
+        """Main entry point to run all enabled backups."""
+        if not BACKUP_ENABLED:
+            return
+
+        if BACKUPS.get("database", {}).get("enabled"):
+            await self._backup_database()
+        
+        await asyncio.sleep(5) 
+        
+        if BACKUPS.get("logs", {}).get("enabled"):
+            await self._backup_logs()
+
 
 # we dont use it as images are already samll in size maybe we need it in future lets see
 def optimize_image_size(image_data: bytes, max_size: int, dimensions: Tuple[int, int]) -> bytes:

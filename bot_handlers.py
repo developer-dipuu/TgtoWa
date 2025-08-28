@@ -26,12 +26,13 @@ from queue_manager import queue_manager, SYSTEM_PRIORITY, REGULAR_USER_PRIORITY,
 from sticker_converter import StickerConverter
 from session_manager import SessionManager, Flow, Session
 import database as db
+from notification_manager import NotificationManager, BackupManager
 
 SYSTEM_USER_ID = 0
 logger = logging.getLogger(__name__)
 
 class BotHandlers:
-    def __init__(self, client: TelegramClient, bot_info):
+    def __init__(self, client: TelegramClient, bot_info, notification_manager: NotificationManager):
         """
         Initializes the bot handlers with the Telethon client and other necessary components.
         """
@@ -40,6 +41,8 @@ class BotHandlers:
         self.network_task = NetworkTask(self.client)
         self.converter = StickerConverter(self.client)
         self.session_manager = SessionManager()
+        self.notification_manager = notification_manager
+        self.backup_manager = BackupManager(self.client)
         self.processing_lock = asyncio.Lock()
         self.bot_username = f"@{bot_info.username}"
         self.cache_enabled = CACHE_ENABLED
@@ -66,6 +69,7 @@ class BotHandlers:
         asyncio.create_task(self._premium_users_cleanup_loop(check_interval_seconds=86400))
         asyncio.create_task(self._calculate_popular_packs_loop())
         asyncio.create_task(self._callback_locks_cleanup_loop(ttl_seconds=3600, check_interval_seconds=600))
+        asyncio.create_task(self._daily_backup_loop())
         
     def check_banned(func):
         """Decorator to check if a user is banned before executing a command."""
@@ -143,6 +147,10 @@ class BotHandlers:
 
             except Exception as e:
                 logger.error(f"FATAL: The _callback_locks_cleanup_loop crashed: {e}", exc_info=True)
+                await self.notification_manager.send_uncaught_exception(
+                    (type(e), e, e.__traceback__)
+                )
+                await asyncio.sleep(3600) # time for developer to fix and stop the same error code running again otherwise it will keep sending damn notifications every 10m
             logger.info("Cleaned old user callback locks.")
 
     async def _reply_locks_cleanup_loop(self, ttl_seconds=3600):
@@ -165,6 +173,10 @@ class BotHandlers:
                         self.reply_locks.pop(cid, None)
             except Exception as e:
                 logger.error(f"FATAL: The _reply_locks_cleanup_loop crashed: {e}", exc_info=True)
+                await self.notification_manager.send_uncaught_exception(
+                    (type(e), e, e.__traceback__)
+                )
+                await asyncio.sleep(3600)
             logger.info("cleaned up old admin locks.")
 
     async def _session_cleanup_loop(self, check_interval_seconds: int = 600):
@@ -175,6 +187,10 @@ class BotHandlers:
                 await self.session_manager.cleanup()
             except Exception as e:
                 logger.error(f"FATAL: The _session_cleanup_loop crashed: {e}", exc_info=True)
+                await self.notification_manager.send_uncaught_exception(
+                    (type(e), e, e.__traceback__)
+                )
+                await asyncio.sleep(3600)
             logger.info("Periodic session cleanup finished.")
 
     async def _premium_users_cleanup_loop(self, check_interval_seconds: int = 86400):
@@ -191,17 +207,44 @@ class BotHandlers:
                     logger.info("No expired premium users found to remove.")
             except Exception as e:
                 logger.error(f"FATAL: The _premium_users_cleanup_loop crashed: {e}", exc_info=True)
+                await self.notification_manager.send_uncaught_exception(
+                    (type(e), e, e.__traceback__)
+                )
+                await asyncio.sleep(3600)
 
     async def _refresh_popular_packs_cache(self):
         """Fetches popular packs from DB and loads them into memory."""
         try:
-            # Use to_thread since DB access can be blocking
             self.daily_popular_packs = await asyncio.to_thread(db.get_popular_packs, 'daily')
             self.all_time_popular_packs = await asyncio.to_thread(db.get_popular_packs, 'all_time')
             logger.info(f"Popular packs refreshed. Loaded {len(self.daily_popular_packs)} daily and {len(self.all_time_popular_packs)} all-time packs.")
         except Exception as e:
             logger.error(f"Failed to refresh in-memory popular packs cache: {e}")
+            await self.notification_manager.send_uncaught_exception(
+                    (type(e), e, e.__traceback__)
+                )
 
+    async def _daily_backup_loop(self):
+        """Periodically runs the backup manager task at midnight."""
+        while True:
+            try:
+                now = datetime.now()
+                # Set next run for a minute past midnight to avoid edge cases
+                next_run = (now + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+                sleep_seconds = (next_run - now).total_seconds()
+
+                logger.info(f"Next daily backup scheduled in {(sleep_seconds / 3600):.2f} hours.")
+                await asyncio.sleep(sleep_seconds)
+
+                logger.info("Starting scheduled daily backup...")
+                await self.backup_manager.run_backup()
+
+            except Exception as e:
+                logger.error(f"FATAL: The _daily_backup_loop crashed: {e}", exc_info=True)
+                await self.notification_manager.send_uncaught_exception(
+                    (type(e), e, e.__traceback__)
+                )
+                await asyncio.sleep(3600)
 
     async def _calculate_popular_packs_loop(self):
         """Periodically calculates and stores popular packs."""
@@ -228,6 +271,10 @@ class BotHandlers:
 
             except Exception as e:
                 logger.error(f"FATAL: The _calculate_popular_packs_loop crashed: {e}", exc_info=True)
+                await self.notification_manager.send_uncaught_exception(
+                    (type(e), e, e.__traceback__)
+                )
+                await asyncio.sleep(3600)
 
     def _create_channel_join_buttons(self) -> list:
         """Dynamically creates buttons for channels and groups."""
@@ -276,11 +323,13 @@ class BotHandlers:
             channel_id, message_ids = position
             try:
                 await self.client.delete_messages(channel_id, message_ids)
-            except ChatAdminRequiredError:
+            except ChatAdminRequiredError as e:
                 logger.error(f"Can't delete cache messages {message_ids}! Insufficient permissions in the channel {channel_id}!")
+                asyncio.create_task(self.notification_manager.send_cache_delete_failure(channel_id, message_ids, e))
                 return False
             except Exception as e:
                 logger.error(f"Could not delete cache messages {message_ids} in the channel {channel_id}. An error has occured: {e}")
+                asyncio.create_task(self.notification_manager.send_cache_delete_failure(channel_id, message_ids, e))
                 return False
         else:
             return None
@@ -309,11 +358,13 @@ class BotHandlers:
 
             try:
                 await self.client.delete_messages(channel, message_chunk)
-            except ChatAdminRequiredError:
+            except ChatAdminRequiredError as e:
                 logger.error(f"Can't delete cache messages {message_chunk}! Insufficient permissions in the channel {channel}!")
+                asyncio.create_task(self.notification_manager.send_cache_delete_failure(channel, message_chunk, e))
                 status = False
             except Exception as e:
                 logger.error(f"Could not delete cache messages {message_chunk} in the channel {channel}.Error: {e}")
+                asyncio.create_task(self.notification_manager.send_cache_delete_failure(channel, message_chunk, e))
                 status = False
             await asyncio.sleep(1)
 
@@ -327,11 +378,15 @@ class BotHandlers:
 
         try:
             await self.client.delete_messages(chat_id, msg_id)
-        except ChatAdminRequiredError:
+        except ChatAdminRequiredError as e:
             log_error(f"Can't delete message(s): {msg_id}. Bot lacks required permissions in chat {chat_id}.")
+            if custom_error_log:
+                asyncio.create_task(self.notification_manager.send_message_delete_failure(chat_id, msg_id, custom_error_log, e))
             return False
         except Exception as e:
             log_error(f"Could not delete message(s) {msg_id} in chat {chat_id}. Error: {e}")
+            if custom_error_log:
+                asyncio.create_task(self.notification_manager.send_message_delete_failure(chat_id, msg_id, custom_error_log, e))
             return False
         return True
         
@@ -351,11 +406,15 @@ class BotHandlers:
 
             try:
                 await self.client.delete_messages(chat_id, message_chunk)
-            except ChatAdminRequiredError:
+            except ChatAdminRequiredError as e:
                 log_error(f"Can't delete messages {message_chunk}. Bot lacks required permissions in chat {chat_id}!")
+                if custom_error_log:
+                    asyncio.create_task(self.notification_manager.send_message_delete_failure(chat_id, message_chunk, custom_error_log, e))
                 return False # no need to try for other chunks it wont work
             except Exception as e:
                 log_error(f"Could not delete messages {message_chunk} in chat {chat_id}. Error: {e}")
+                if custom_error_log:
+                    asyncio.create_task(self.notification_manager.send_message_delete_failure(chat_id, message_chunk, custom_error_log, e))
                 status = False
             await asyncio.sleep(1) # rate limits
 
@@ -1121,7 +1180,7 @@ class BotHandlers:
                     logger.warning(f"Could not send timeout message to {item.user_id}: {e}")
             user = await item.event.get_sender()
             user_display_name =get_user_display_name(user)
-            await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "ConversionTimeout", "Creating .wasticker files took longer than expected.")
+            await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, sticker_set, "ConversionTimeout", "Creating .wasticker files took longer than expected.")
             return status_for_db # return failed status immidiately 
         except Exception as e:
             status_for_db = "failed_conversion_exception"
@@ -1138,17 +1197,17 @@ class BotHandlers:
                     logger.warning(f"Could not send timeout message to {item.user_id}: {e}")
             user = await item.event.get_sender()
             user_display_name =get_user_display_name(user)
-            await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, type(e).__name__, str(e))
+            await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, sticker_set, type(e).__name__, str(e))
             return status_for_db # return failed status immidiately 
     
         if not wastickers_files:
             status_for_db = "failed_no_wasticker_file"
             if not is_silent_mode:
-                await self.client.send_message(item.event.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{safe_pack_title}</a></b>. If the problem persists, ping us at **{SUPPORT_GROUP}**", link_preview=False, parse_mode='html')
+                await self.client.send_message(item.event.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{safe_pack_title}</a></b>. If the problem persists, ping us at <b>{SUPPORT_GROUP}</b>", link_preview=False, parse_mode='html')
             # This is a failure so we raise an exception.
             user = await item.event.get_sender()
             user_display_name =get_user_display_name(user)
-            await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "NoWastickerFileCreated", "The conversion returned no .wasticker file.")
+            await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, sticker_set, "NoWastickerFileCreated", "The conversion returned no .wasticker file.")
             return status_for_db
 
         conversion_end_time = time.monotonic()
@@ -1206,7 +1265,7 @@ class BotHandlers:
                     #notify owner
                     user = await item.event.get_sender()
                     user_display_name =get_user_display_name(user)
-                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "UploadTimeoutCaching", f"File: {', '.join(failed_uploads)}")
+                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, sticker_set, "UploadTimeoutCaching", f"File: {', '.join(failed_uploads)}")
                 except* FileUploadWrapperError as eg_w:
                     all_uploads_succeeded = False
                     status_for_db = "failed_upload_error_while_caching"
@@ -1226,7 +1285,7 @@ class BotHandlers:
                     #notify owner
                     user = await item.event.get_sender()
                     user_display_name =get_user_display_name(user)
-                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "UploadErrorCaching", f"File: {", ".join(failed_uploads)}")
+                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, sticker_set, "UploadErrorCaching", f"File: {", ".join(failed_uploads)}")
                 finally:
                     # This ensures temporary .wastickers files are deleted if they weren't cached and moved.
                     for file_path in wastickers_files:
@@ -1286,7 +1345,7 @@ class BotHandlers:
                     #notify owner
                     user = await item.event.get_sender()
                     user_display_name =get_user_display_name(user)
-                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "UploadTimeout", f"File: {", ".join(failed_uploads)}")
+                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, sticker_set, "UploadTimeout", f"File: {", ".join(failed_uploads)}")
                 except* FileUploadWrapperError as eg_w:
                     status_for_db = "failed_upload_error"
                     all_uploads_succeeded = False
@@ -1305,7 +1364,7 @@ class BotHandlers:
                     #notify owner
                     user = await item.event.get_sender()
                     user_display_name =get_user_display_name(user)
-                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, sticker_set, "UploadError", f"File: {", ".join(failed_uploads)}")
+                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, sticker_set, "UploadError", f"File: {", ".join(failed_uploads)}")
                 finally:
                     # This ensures temporary .wastickers files are deleted if they weren't cached and moved.
                     for file_path in wastickers_files:
@@ -1390,7 +1449,7 @@ class BotHandlers:
                     logger.error(f"An exception occurred while processing queue item for user {item.user_id}: {e}", exc_info=True)
                     user = await item.event.get_sender()
                     user_display_name =get_user_display_name(user)
-                    await notify_owner_of_failure(self.client, item.user_id, user_display_name, item.log_id, item.sticker_set, f"Some error that you never expeted: {type(e).__name__}", str(e))
+                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, item.sticker_set, f"Some error that you never expeted: {type(e).__name__}", str(e))
 
                 finally:
                     # Update the database log
@@ -2075,7 +2134,7 @@ class BotHandlers:
         else: # Send the latest (current) log
             logger.info(f"Owner {event.sender_id} requested the latest log file.")
             # Find the uncompressed .log file (logrotate leaves today's log uncompressed)
-            # Your .screenrc names it based on session and window, e.g., tgBot-0.log
+            # .screenrc names it based on session and window e.g. tgBot-0.log
             try:
                 latest_logs = glob.glob(os.path.join(log_dir, '*.log'))
                 
