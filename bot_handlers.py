@@ -26,7 +26,8 @@ from queue_manager import queue_manager, SYSTEM_PRIORITY, REGULAR_USER_PRIORITY,
 from sticker_converter import StickerConverter
 from session_manager import SessionManager, Flow, Session
 import database as db
-from notification_manager import NotificationManager, BackupManager
+from notification_manager import NotificationManager
+from utils import BackupManager
 
 SYSTEM_USER_ID = 0
 logger = logging.getLogger(__name__)
