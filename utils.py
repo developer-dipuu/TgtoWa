@@ -10,7 +10,7 @@ import asyncio
 import tempfile
 import shutil
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Any
 from telethon import TelegramClient
 from telethon.tl.types import InputStickerSetShortName, InputStickerSetID, Document
@@ -240,13 +240,13 @@ class BackupManager:
                 logger.error("Database backup failed: DB file not found.")
                 return
 
-            date_str = datetime.now().strftime('%Y-%m-%d')
+            date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
             zip_filename = f"db_backup_{date_str}.zip"
             zip_path = os.path.join(TEMP_DIR, zip_filename)
 
             await self._create_zip_archive([db_file_path], zip_path)
 
-            caption = f"#db_backup\nDate: {date_str}"
+            caption = f"#db_backup\nDate: {date_str} UTC"
             await self.client.send_file(
                 BACKUP_GROUP_ID,
                 file=zip_path,
@@ -275,13 +275,13 @@ class BackupManager:
                 logger.info("Log backup skipped: No log files found.")
                 return
 
-            date_str = datetime.now().strftime('%Y-%m-%d')
+            date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
             zip_filename = f"logs_backup_{date_str}.zip"
             zip_path = os.path.join(TEMP_DIR, zip_filename)
 
             await self._create_zip_archive(log_files, zip_path)
 
-            caption = f"#log_backup\nDate: {date_str}"
+            caption = f"#log_backup\nDate: {date_str} UTC"
             await self.client.send_file(
                 BACKUP_GROUP_ID,
                 file=zip_path,

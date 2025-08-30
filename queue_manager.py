@@ -5,7 +5,7 @@ Queue management system for the Telegram Sticker/Emoji to WhatsApp Sticker Conve
 import asyncio
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from telethon import events
 
@@ -56,7 +56,7 @@ class QueueManager:
                 sticker_set=sticker_set,
                 estimated_seconds=estimated_seconds,
                 log_id=log_id,
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
                 priority=priority,
                 event=event,
                 is_cache_suspicious=is_cache_suspicious,

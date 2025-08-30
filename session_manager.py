@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import secrets
 from enum import Enum
 from typing import Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 
 class Flow(str, Enum):
@@ -17,7 +17,7 @@ class Session:
     session_id: str
     state: str
     payload: Dict[str, Any]
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: Optional[datetime] = None
     active: bool = True
 
@@ -29,7 +29,7 @@ class SessionManager:
         self._msg_index: Dict[tuple, tuple] = {}
         self._lock = asyncio.Lock()
 
-    def _now(self): return datetime.now()
+    def _now(self): return datetime.now(timezone.utc)
 
     async def create(self, user_id: int, flow: Flow, state: str, payload: Optional[Dict[str, Any]] = None,
                      ttl_seconds: Optional[int] = None, single_active: bool = False) -> Session:
