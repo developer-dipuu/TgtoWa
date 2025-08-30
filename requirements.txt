@@ -6,3 +6,4 @@ av==15.0.0
 emoji==2.14.1
 regex==2025.7.34
 cryptg
+psycopg2-binary
