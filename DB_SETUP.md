@@ -80,7 +80,7 @@ sudo systemctl start postgresql
 sudo systemctl enable postgresql
 ```
 
-You can check its status with `sudo systemctl status postgresql`. You should see it's `active (running)`.
+You can check its status with `sudo systemctl status postgresql` or `sudo systemctl status postgresql@16-main` (Debian/Ubuntu). You should see it's `active (running)`.
 
 ---
 
