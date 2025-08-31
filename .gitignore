@@ -5,3 +5,4 @@ temp/
 extra_shits/
 *.session
 *.db
+.env
