@@ -9,7 +9,7 @@ Welcome! This guide provides a comprehensive walkthrough for installing and conf
 3.  [Step 2: Initialize & Start the Service](#-step-2-initialize--start-the-service)
 4.  [Step 3: Configure Remote Access](#-step-3-configure-remote-access)
 5.  [Step 4: Configure Client Authentication](#-step-4-configure-client-authentication)
-6.  [Step 5: Configure the Firewall](#-step-5-configure-the-firewall)
+6.  [Step 5: Configure the Firewall](#-step-5-configure-the-firewall-if-enabled)
 7.  [Step 6: Create Your Database & User](#-step-6-create-your-database--user)
 8.  [Step 7: Connect to Your New Database](#-step-7-connect-to-your-new-database)
 9.  [Troubleshooting](#-troubleshooting)
@@ -181,10 +181,15 @@ This is the most critical security step. The `pg_hba.conf` (Host-Based Authentic
 
 ---
 
-### 🔥 Step 5: Configure the Firewall
+### 🔥 Step 5: Configure the Firewall (if enabled)
 
 You've told PostgreSQL to listen for remote connections, but the server's firewall will block them by default. We need to open the port for PostgreSQL (port `5432`).
 
+First check whether the host firewall is enabled:
+* On Debian/Ubuntu: `sudo ufw status`
+* On Fedora/RHEL/CentOS: `sudo firewall-cmd --state`
+
+If the firewall is enabled, run the corresponding commands below to open port 5432; otherwise you can skip to the next step.
 * **For `ufw` (Debian, Ubuntu):**
     ```bash
     # Allow traffic on the default PostgreSQL port.
@@ -193,8 +198,8 @@ You've told PostgreSQL to listen for remote connections, but the server's firewa
     # You might see this work as well
     # sudo ufw allow postgresql
 
-    # Make sure to enable ufw if it isn't already
-    sudo ufw enable
+    ## Reload the firewall to apply the new rule.
+    sudo ufw reload
     ```
 
 * **For `firewalld` (Fedora, RHEL, CentOS):**
