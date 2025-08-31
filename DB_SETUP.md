@@ -91,7 +91,8 @@ By default, PostgreSQL only listens for connections from the local machine. To a
 1.  **Open the main configuration file:**
     The path can vary, but it's often at `/var/lib/pgsql/data/postgresql.conf` (Fedora/RHEL) or `/etc/postgresql/<version>/main/postgresql.conf` (Debian/Ubuntu).
     ```bash
-    sudo nano /var/lib/pgsql/data/postgresql.conf
+    # For Debian/Ubuntu
+    sudo nano /etc/postgresql/16/main/postgresql.conf
     ```
 
 2.  **Find the `listen_addresses` setting:**
@@ -118,7 +119,7 @@ This is the most critical security step. The `pg_hba.conf` (Host-Based Authentic
 1.  **Open the `pg_hba.conf` file:**
     It's in the same directory as `postgresql.conf`.
     ```bash
-    sudo nano /var/lib/pgsql/data/pg_hba.conf
+    sudo nano /etc/postgresql/16/main/pg_hba.conf
     ```
 
 2.  **Understand the Default Rules:**
