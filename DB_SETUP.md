@@ -7,9 +7,9 @@ Welcome! This guide provides a comprehensive walkthrough for installing and conf
 1.  [Prerequisites](#-prerequisites)
 2.  [Step 1: Install PostgreSQL](#-step-1-install-postgresql)
 3.  [Step 2: Initialize & Start the Service](#-step-2-initialize--start-the-service)
-4.  [Step 3: Configure Remote Access (Listen Up!)](#-step-3-configure-remote-access-listen-up)
-5.  [Step 4: Configure Client Authentication (Who's Allowed In?)](#-step-4-configure-client-authentication-whos-allowed-in)
-6.  [Step 5: Configure the Firewall (The Bouncer)](#-step-5-configure-the-firewall-the-bouncer)
+4.  [Step 3: Configure Remote Access](#-step-3-configure-remote-access)
+5.  [Step 4: Configure Client Authentication](#-step-4-configure-client-authentication)
+6.  [Step 5: Configure the Firewall](#-step-5-configure-the-firewall)
 7.  [Step 6: Create Your Database & User](#-step-6-create-your-database--user)
 8.  [Step 7: Connect to Your New Database](#-step-7-connect-to-your-new-database)
 9.  [Troubleshooting](#-troubleshooting)
@@ -29,22 +29,19 @@ Before you begin, make sure you have:
 
 First things first, let's get the software installed. The command will vary depending on your Linux distribution. Pick the one that matches your system!
 
-* **For Fedora, RHEL, CentOS, or AlmaLinux:**
-    ```bash
-    # This command installs the main server package and some useful extra tools.
-    sudo dnf install postgresql-server postgresql-contrib
-    ```
-
 * **For Debian or Ubuntu:**
     ```bash
-    # Update your package list first, then install.
     sudo apt update
     sudo apt install postgresql postgresql-contrib
     ```
 
+* **For Fedora, RHEL, CentOS, or AlmaLinux:**
+    ```bash
+    sudo dnf install postgresql-server postgresql-contrib
+    ```
+
 * **For Arch Linux:**
     ```bash
-    # Arch keeps it simple.
     sudo pacman -S postgresql
     ```
 
@@ -72,6 +69,7 @@ Out of the box, the database cluster (the collection of databases managed by the
 
 **Now, let's start the database service and enable it to launch on boot:**
 
+_As discussed above, this is not required for Debian or Ubuntu._
 ```bash
 # Start the PostgreSQL service right now
 sudo systemctl start postgresql
@@ -84,21 +82,26 @@ You can check its status with `sudo systemctl status postgresql` or `sudo system
 
 ---
 
-### 📡 Step 3: Configure Remote Access (Listen Up!)
+### 📡 Step 3: Configure Remote Access
 
 By default, PostgreSQL only listens for connections from the local machine. To allow remote connections, you need to tell it which network addresses to listen on.
 
 1.  **Open the main configuration file:**
     The path can vary, but it's often at `/var/lib/pgsql/data/postgresql.conf` (Fedora/RHEL) or `/etc/postgresql/<version>/main/postgresql.conf` (Debian/Ubuntu).
+    
+    For Debian or Ubuntu:
     ```bash
-    # For Debian/Ubuntu
     sudo nano /etc/postgresql/16/main/postgresql.conf
     ```
+    For Fedora, RHEL, CentOS, or AlmaLinux:
+    ```bash
+    sudo nano /var/lib/pgsql/data/postgresql.conf
+    ```
 
-2.  **Find the `listen_addresses` setting:**
+3.  **Find the `listen_addresses` setting:**
     Scroll down until you find the `#listen_addresses = 'localhost'` line.
 
-3.  **Change it!**
+4.  **Change it!**
     * **For security, it's best to specify the IP addresses** that will be connecting. This creates a smaller attack surface.
         ```conf
         # Example with a list of allowed IPs
@@ -112,20 +115,23 @@ By default, PostgreSQL only listens for connections from the local machine. To a
 
 ---
 
-### 🛡️ Step 4: Configure Client Authentication (Who's Allowed In?)
+### 🔐 Step 4: Configure Client Authentication
 
 This is the most critical security step. The `pg_hba.conf` (Host-Based Authentication) file acts as the database's security guard, defining who can connect, from where, and how they must prove their identity.
 
 1.  **Open the `pg_hba.conf` file:**
     It's in the same directory as `postgresql.conf`.
+    
+    Debian or Ubuntu:
     ```bash
-    # Debian/Ubuntu
     sudo nano /etc/postgresql/16/main/pg_hba.conf
-    # Fedora/RHEL
+    ```
+    For Fedora, RHEL, CentOS, or AlmaLinux:
+    ```bash
     sudo nano /var/lib/pgsql/data/pg_hba.conf
     ```
 
-2.  **Understand the Default Rules:**
+3.  **Understand the Default Rules:**
     Near the bottom, you'll see lines like this:
     ```conf
     # TYPE  DATABASE        USER            ADDRESS                 METHOD
@@ -136,7 +142,7 @@ This is the most critical security step. The `pg_hba.conf` (Host-Based Authentic
     * **`peer` and `ident`** are methods that rely on the operating system's username. They are secure for local access but don't work for remote password-based connections.
     * **`scram-sha-256`** is a modern, secure password-based authentication method. This is what we want for our remote users.
 
-3.  **Update the Authentication Methods:**
+4.  **Update the Authentication Methods:**
     Change the `METHOD` for local and network connections to `scram-sha-256`. We'll also add a rule to let the `postgres` superuser connect locally without a password for easy administration.
 
     **Your new rules should look like this:**
@@ -161,29 +167,23 @@ This is the most critical security step. The `pg_hba.conf` (Host-Based Authentic
     host    bot_db         bot_user         198.51.100.0/24         scram-sha-256
     ```
 
-4.  **Restart PostgreSQL to Apply Changes:**
+5.  **Restart PostgreSQL to Apply Changes:**
     This is crucial! The server won't see your new rules until you restart it.
+
+    For for Debian or Ubuntu:
     ```bash
-    # For Fedora/RHEL
-    sudo systemctl restart postgresql
-    # Or for Debian/Ubuntu
     sudo systemctl restart postgresql@16-main
+    ```
+    For Fedora, RHEL, CentOS, or AlmaLinux:
+    ```bash
+    sudo systemctl restart postgresql
     ```
 
 ---
 
-### 🔥 Step 5: Configure the Firewall (The Bouncer)
+### 🔥 Step 5: Configure the Firewall
 
 You've told PostgreSQL to listen for remote connections, but the server's firewall will block them by default. We need to open the port for PostgreSQL (port `5432`).
-
-* **For `firewalld` (Fedora, RHEL, CentOS):**
-    ```bash
-    # Add the postgresql service to the allowed list, permanently.
-    sudo firewall-cmd --add-service=postgresql --permanent
-
-    # Reload the firewall to apply the new rule.
-    sudo firewall-cmd --reload
-    ```
 
 * **For `ufw` (Debian, Ubuntu):**
     ```bash
@@ -195,6 +195,15 @@ You've told PostgreSQL to listen for remote connections, but the server's firewa
 
     # Make sure to enable ufw if it isn't already
     sudo ufw enable
+    ```
+
+* **For `firewalld` (Fedora, RHEL, CentOS):**
+    ```bash
+    # Add the postgresql service to the allowed list, permanently.
+    sudo firewall-cmd --add-service=postgresql --permanent
+
+    # Reload the firewall to apply the new rule.
+    sudo firewall-cmd --reload
     ```
 
 ---
