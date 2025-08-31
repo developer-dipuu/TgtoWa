@@ -119,7 +119,10 @@ This is the most critical security step. The `pg_hba.conf` (Host-Based Authentic
 1.  **Open the `pg_hba.conf` file:**
     It's in the same directory as `postgresql.conf`.
     ```bash
+    # Debian/Ubuntu
     sudo nano /etc/postgresql/16/main/pg_hba.conf
+    # Fedora/RHEL
+    sudo nano /var/lib/pgsql/data/pg_hba.conf
     ```
 
 2.  **Understand the Default Rules:**
@@ -161,7 +164,10 @@ This is the most critical security step. The `pg_hba.conf` (Host-Based Authentic
 4.  **Restart PostgreSQL to Apply Changes:**
     This is crucial! The server won't see your new rules until you restart it.
     ```bash
+    # For Fedora/RHEL
     sudo systemctl restart postgresql
+    # Or for Debian/Ubuntu
+    sudo systemctl restart postgresql@16-main
     ```
 
 ---
