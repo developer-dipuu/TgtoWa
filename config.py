@@ -1,34 +1,33 @@
 import html
+import os
+import json
+from dotenv import load_dotenv
+
+load_dotenv()
+
 """
 Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
 """
 # ========= Should be changed ===================
 
 # Telegram API things (its must )
-API_ID = 12345678 # Replace with your API ID (must)
-API_HASH = "" # Your API HASH (must)
-BOT_TOKEN = "" # Your bot token (must)
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-OWNER_ID = 1234567890 # Replace with your Telegram User ID (needed for approving admins and users)
+OWNER_ID = int(os.getenv("OWNER_ID")) # The owner
 
-# ‼️ Must READ
 ''' Required channels to use this bot (leave empty if you don't want to force user to join)
+This is handled automatically by env_setup.py.
 For public channel/group add a tuple like this ("Name", "@username")
 For private channel/group add a tuple like this ("Name", "link", -1212324141) 
 -1212324141 is your channel/group id, get it by forwarding any of your channel/group's message to @username_to_id_bot (or @MissRose_bot and reply /id to that message)
- ⚠️⚠️⚠️ [("Public_Channel_Name", "@channel_1_username"), ("Private_Channel_Name", "https://t.me/+abcdefghijk", -34876824274 )] ⚠️⚠️⚠️  Use this format Only '''
+[("Public_Channel_Name", "@channel_1_username"), ("Private_Channel_Name", "https://t.me/+abcdefghijk", -34876824274 )]  Use this format Only '''
 
-REQUIRED_CHANNELS = []
-
+REQUIRED_CHANNELS = json.loads(os.getenv("REQUIRED_CHANNELS_JSON"))
 
 # Support group for bot related queries (will be used in help message)
-SUPPORT_GROUP = "@your_support_group_here"    
-
-
-# if you're done editing this far the only thing must to edit is the CACHE_CHANNEL_IDS (if the CACHE_ENABLED is True, that is by default and recommended).
-# Recommended: Also create a new group and replace its ID in NOTIFICATION_GROUP_ID, this is required to recive failure notifications if something goes wrong. 
-# You may review and adjust "Timeouts and processing limits" section as per your connection speed and needs but dont change other shits unless you know what you are doing)
-
+SUPPORT_GROUP = os.getenv("SUPPORT_GROUP")
 
 # =============================================
 
@@ -51,6 +50,13 @@ MAX_CONVERSION_SECONDS_REGULAR = 300  # 5 minutes. Max estimated time for non-pr
 DB_UPLOAD_TIMEOUT = 30
 MAX_DOWNLOAD_RETRIES = 3
 
+# ------- Database Credentials -------
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+
 # ------File paths ---------- 
 DATA_DIR = "data"
 TEMP_DIR = "temp"
@@ -62,8 +68,9 @@ DB_PATH = f"{DATA_DIR}/bot_data.db" # its by default in the data directory but i
 CACHE_ENABLED = True # To use cache or not, owner can change it using the bot too but on bot restarts it will change to this default value
 CACHE_SCORE_TIME_WEIGHT = 1.5   # Weight for conversion duration (in seconds)
 CACHE_SCORE_REQUEST_WEIGHT = 1 # Weight for the number of times a pack is requested
-CACHE_CHANNEL_IDS = [-1234567890123, -1234567890123] # ⚠️⚠️⚠️⚠️ REPLACE YOUR PRIVATE CACHE CHANNEL IDs HERE (I recommend you to add two of them)⚠️⚠️⚠️
 MAX_FILES_PER_CACHE_CHANNEL = 95000
+cache_ids_str = os.getenv("CACHE_CHANNEL_IDS", "")
+CACHE_CHANNEL_IDS = [int(channel_id) for channel_id in cache_ids_str.split(',') if channel_id.strip()]
 
 # ------ formatting a few things ----------
 # formatting properly for use
@@ -80,11 +87,14 @@ _channel_list_str = "\n".join([f"• <b><a href=\"{channel[1]}\">{html.escape(ch
 
 # The chat ID of the group where all notifications will be sent. Must be a negative number for groups.
 # Get it by sending group to @username_to_id_bot
-NOTIFICATION_GROUP_ID = -4842560114 # ⚠️ REPLACE WITH YOUR NOTIFICATION GROUP ID
-
+NOTIFICATION_GROUP_ID = int(os.getenv("NOTIFICATION_GROUP_ID"))
 # A list of admin/owner user IDs to mention in critical notifications.
-# These users MUST be in the NOTIFICATION_GROUP_ID group.
-ADMINS_TO_MENTION = [OWNER_ID] # You can add more admin user IDs here, like [OWNER_ID, 1235642345, 621425890]
+admins_str = os.getenv("ADMINS_TO_MENTION")
+if admins_str:
+    ADMINS_TO_MENTION = [int(admin_id) for admin_id in admins_str.split(',') if admin_id.strip()]
+else:
+    ADMINS_TO_MENTION = [OWNER_ID] # Default to the owner if not set
+
 
 NOTIFICATIONS = {
     # For conversion failures during processing.
