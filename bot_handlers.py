@@ -10,7 +10,7 @@ import asyncio
 import logging
 import re
 import html
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events, Button
 from telethon.errors import UserIsBlockedError, ChatAdminRequiredError
 from telethon.errors.rpcerrorlist import UserNotParticipantError
@@ -132,7 +132,7 @@ class BotHandlers:
         while True:
             await asyncio.sleep(check_interval_seconds)
             try:
-                now = datetime.now()
+                now = datetime.now(timezone.utc)
                 async with self.user_callback_locks_lock:
                     to_remove = []
                     for user_id, entry in self.user_callback_locks.items():
@@ -161,7 +161,7 @@ class BotHandlers:
             await asyncio.sleep(ttl_seconds)
             logger.info("Cleaning old admin reply locks...")
             try:
-                now = datetime.now()
+                now = datetime.now(timezone.utc)
                 async with self.reply_locks_lock:
                     to_remove = []
                     for cid, entry in list(self.reply_locks.items()):
@@ -229,8 +229,7 @@ class BotHandlers:
         """Periodically runs the backup manager task at midnight."""
         while True:
             try:
-                now = datetime.now()
-                # Set next run for a minute past midnight to avoid edge cases
+                now = datetime.now(timezone.utc)
                 next_run = (now + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
                 sleep_seconds = (next_run - now).total_seconds()
 
@@ -258,8 +257,7 @@ class BotHandlers:
 
         while True:
             try:
-                now = datetime.now()
-                # Set next run for 1 minute past midnight to avoid any weird DST/edge case issues
+                now = datetime.now(timezone.utc)
                 next_run = (now + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
                 sleep_seconds = (next_run - now).total_seconds()
                 
@@ -486,19 +484,19 @@ class BotHandlers:
 
                     logger.info(f"✅ Successfully forwarded pack {set_id} from cache to user {user_id}.")
                     await self.client.send_message(event.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
-                    db.update_conversion_log(log_id, "completed_from_cache", datetime.now(), 0.0)
+                    db.update_conversion_log(log_id, "completed_from_cache", datetime.now(timezone.utc), 0.0)
                     return True
                 except UserIsBlockedError:
                     # some dumbass block the bot even when it is sending files
                     logger.error(f"User has blocked the bot! Failed to forward cached messages for pack {set_id} to user {user_id}.")
-                    db.update_conversion_log(log_id, "completed_from_cache_but_blocked", datetime.now(), 0.0)
+                    db.update_conversion_log(log_id, "completed_from_cache_but_blocked", datetime.now(timezone.utc), 0.0)
                     return True
                 # if all successful upload
                 except Exception as e:
                     logger.error(f"Failed to forward cached messages for pack {set_id} to user {user_id}: {e}")
                     # If forwarding fails, it's a critical error. Let's treat it as a cache miss and re-convert.
                     await event.reply("🤔 Oops! I found this in the cache, but couldn't send it. I'll try re-converting it for you now.")
-                    db.update_conversion_log(log_id, "failed_forward_from_cache", datetime.now(), 0.0)
+                    db.update_conversion_log(log_id, "failed_forward_from_cache", datetime.now(timezone.utc), 0.0)
                     # clear the broken cache
                     asyncio.create_task(self.delete_cache(set_id))
             else:
@@ -752,7 +750,7 @@ class BotHandlers:
             set_title = sticker_set.set.title
             set_count = len(sticker_set.documents)
 
-            cache_status, channel_id, message_ids = db.is_pack_cached(set_id, set_title, set_count)
+            cache_status, channel_id, message_ids = db.is_pack_cached(set_id, set_title, set_count, is_system_process=True)
 
             if cache_status == 'hit':
                 messages = await self.client.get_messages(channel_id, ids=message_ids)
@@ -1415,7 +1413,7 @@ class BotHandlers:
                                 logger.info(f"Skipping processing for pack '{sticker_set.set.short_name}' (Log ID: {item.log_id}) as it's already cached.")
                                 
                                 # We must properly close out this queue item and log it.
-                                db.update_conversion_log(item.log_id, "completed_skipped_pre_cached", datetime.now(), 0.0)
+                                db.update_conversion_log(item.log_id, "completed_skipped_pre_cached", datetime.now(timezone.utc), 0.0)
                                 await queue_manager.complete_processing(item.user_id, success=True)
                                 
                                 # And importantly clean up our system job trackers i mean those damn sets
@@ -1435,7 +1433,7 @@ class BotHandlers:
                         logger.warning(f"Pre-check failed for pack '{sticker_set.set.short_name}': {e}. Proceeding with conversion as a fallback.")
 
 
-                start_time = datetime.now()
+                start_time = datetime.now(timezone.utc)
                 success = False 
                 status_for_db = "None"
                 try:                    
@@ -1454,7 +1452,7 @@ class BotHandlers:
 
                 finally:
                     # Update the database log
-                    completion_time = datetime.now()
+                    completion_time = datetime.now(timezone.utc)
                     duration = (completion_time - start_time).total_seconds()
                     db.update_conversion_log(item.log_id, status_for_db, completion_time, duration)
                     if status_for_db.startswith("completed"):
@@ -1711,13 +1709,13 @@ class BotHandlers:
         async with self.reply_locks_lock:
             entry = self.reply_locks.get(contact_id)
             if not entry:
-                entry = {"lock": asyncio.Lock(), "last_used": datetime.now()}
+                entry = {"lock": asyncio.Lock(), "last_used": datetime.now(timezone.utc)}
                 self.reply_locks[contact_id] = entry
 
         contact_lock = entry["lock"]
 
         # update last_used immediately before we wait so cleanup won't remove it mid-wait
-        entry["last_used"] = datetime.now()
+        entry["last_used"] = datetime.now(timezone.utc)
 
         async with contact_lock:
             # Check if this message has been replied already
@@ -1761,7 +1759,7 @@ class BotHandlers:
 
                 await event.reply(prompt_text, buttons=buttons)
 
-            entry["last_used"] = datetime.now()
+            entry["last_used"] = datetime.now(timezone.utc)
 
         return True
 
@@ -2019,21 +2017,24 @@ class BotHandlers:
         """Owner command to promote a user to admin."""
         if not db.is_owner(event.sender_id):
             return # Silently ignore for non-owners
+        
+        try:
+            target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
+            if not target_user:
+                await event.reply("ℹ️ Usage: `/promote <user_id/@username>` or reply to a user's message.")
+                return
 
-        target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
-        if not target_user:
-            await event.reply("ℹ️ Usage: `/promote <user_id/@username>` or reply to a user's message.")
-            return
-
-        if db.is_admin(target_user.id):
-            await event.reply(f"️🤷‍♂️ User `{target_user.id}` is already an admin.")
-            return
-            
-        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-        db.add_admin(target_user.id, target_user.username, event.sender_id)
-        await event.reply(f"👑 Successfully promoted **{full_name}** (`{target_user.id}`) to Admin!")
-        logger.info(f"User {target_user.id} promoted to admin by {event.sender_id}")
-
+            if db.is_admin(target_user.id):
+                await event.reply(f"️🤷‍♂️ User `{target_user.id}` is already an admin.")
+                return
+                
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+            db.add_admin(target_user.id, target_user.username, event.sender_id)
+            await event.reply(f"👑 Successfully promoted **{full_name}** (`{target_user.id}`) to Admin!")
+            logger.info(f"User {target_user.id} promoted to admin by {event.sender_id}")
+        except Exception as e:
+            await event.reply(f"An error has occurred:\n```{e}```")
+            logger.info(f"An error has occurred while promoting someone to admin by {event.sender_id}. Error: {e}")
         raise StopPropagation
 
     # owner's command
@@ -2042,22 +2043,25 @@ class BotHandlers:
         if not db.is_owner(event.sender_id):
             return
 
-        target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
-        if not target_user:
-            await event.reply("ℹ️ Usage: `/demote <user_id/@username>` or reply to a user's message.")
-            return
+        try:
+            target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
+            if not target_user:
+                await event.reply("ℹ️ Usage: `/demote <user_id/@username>` or reply to a user's message.")
+                return
 
-        if not db.is_admin(target_user.id) or db.is_owner(target_user.id):
-            await event.reply(f"🤷‍♂️ User `{target_user.id}` is not a promotable/demotable admin.")
-            return
+            if not db.is_admin(target_user.id) or db.is_owner(target_user.id):
+                await event.reply(f"🤷‍♂️ User `{target_user.id}` is not a promotable/demotable admin.")
+                return
 
-        if db.remove_admin(target_user.id, event.sender_id):
-            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-            await event.reply(f"✅ Successfully demoted **{full_name}** (`{target_user.id}`).")
-            logger.info(f"User {target_user.id} demoted by {event.sender_id}")
-        else:
-            await event.reply("❌ Failed to demote user. Are you sure they are an admin?")
-
+            if db.remove_admin(target_user.id, event.sender_id):
+                full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+                await event.reply(f"✅ Successfully demoted **{full_name}** (`{target_user.id}`).")
+                logger.info(f"User {target_user.id} demoted by {event.sender_id}")
+            else:
+                await event.reply("❌ Failed to demote user. Are you sure they are an admin?")
+        except Exception as e:
+            await event.reply(f"An error has occurred:\n```{e}```")
+            logger.info(f"An error has occurred while demoting someone by {event.sender_id}. Error: {e}")
         raise StopPropagation
 
 
@@ -2284,7 +2288,7 @@ class BotHandlers:
         for log_id in jobs_to_cancel:
             # The OWNER_ID is used as the user_id for system tasks
             if await queue_manager.cancel_item(user_id=SYSTEM_USER_ID, log_id=log_id):
-                db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(), 0.0)
+                db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(timezone.utc), 0.0)
                 cancelled_count += 1
 
         self.active_refresh_jobs.clear()
@@ -2450,7 +2454,7 @@ class BotHandlers:
         jobs_to_cancel = list(self.active_add_jobs)
         for log_id in jobs_to_cancel:
             if await queue_manager.cancel_item(user_id=SYSTEM_USER_ID, log_id=log_id):
-                db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(), 0.0)
+                db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(timezone.utc), 0.0)
                 cancelled_count += 1
 
         self.active_add_jobs.clear()
@@ -2524,7 +2528,7 @@ class BotHandlers:
                 set_title = sticker_set.set.title
                 set_count = len(sticker_set.documents)
 
-                cache_status, channel_id, message_ids = db.is_pack_cached(set_id, set_title, set_count)
+                cache_status, channel_id, message_ids = db.is_pack_cached(set_id, set_title, set_count, is_system_process=True)
                 
                 if cache_status == 'hit':
                     try:
@@ -2623,21 +2627,22 @@ class BotHandlers:
             await event.reply("🤷‍♂️ This user is already premium. Use `/extendpremium` to extend their duration.")
             raise StopPropagation
             
-        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
         try:
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
             db.add_premium(target_user.id, target_user.username, duration_days, event.sender_id)
         except OverflowError as e:
             await event.reply("❌ Duration is too long.")
             raise StopPropagation
         except Exception as e:
-            await event.reply("❌ An unknown error has occurred; please contact the developer")
+            logger.error(f"An error has occurred while adding {target_user.id} to premium by {event.sender_id}. Error: {e}")
+            await event.reply("❌ An error has occurred maybe this is not a valid user or the user hasn't started the bot.")
             raise StopPropagation
         
-        expiry = datetime.now() + timedelta(days=duration_days)
+        expiry = datetime.now(timezone.utc) + timedelta(days=duration_days)
         
         await event.reply(
             f"⭐ Successfully granted premium to **{full_name}** (`{target_user.id}`)!\n"
-            f"Expires in: `{duration_days}` days (on `{expiry.strftime('%Y-%m-%d %H:%M')}`)."
+            f"Expires in: `{duration_days}` days (on `{expiry.strftime('%Y-%m-%d %H:%M')} UTC`)."
         )
         logger.info(f"User {target_user.id} granted {duration_days} days of premium by admin: {event.sender_id}")
         raise StopPropagation
@@ -2912,11 +2917,11 @@ class BotHandlers:
         # Get or create a lock for this user
         async with self.user_callback_locks_lock:
             if user_id not in self.user_callback_locks:
-                self.user_callback_locks[user_id] = {"lock": asyncio.Lock(), "last_used": datetime.now()}
+                self.user_callback_locks[user_id] = {"lock": asyncio.Lock(), "last_used": datetime.now(timezone.utc)}
             
             user_lock_entry = self.user_callback_locks[user_id]
             user_lock = user_lock_entry["lock"]
-            user_lock_entry["last_used"] = datetime.now() # Update timestamp
+            user_lock_entry["last_used"] = datetime.now(timezone.utc) # Update last used
 
         if user_lock.locked():
             # if its already locked, its a rapid click
@@ -2945,7 +2950,7 @@ class BotHandlers:
                 log_id = int(data.split("_", 2)[2])
                 success = await queue_manager.cancel_item(user_id, log_id)
                 if success:
-                    db.update_conversion_log(log_id, "cancelled", datetime.now(), 0.0)
+                    db.update_conversion_log(log_id, "cancelled", datetime.now(timezone.utc), 0.0)
                     await event.edit("✅ Your request has been successfully cancelled.")
                 else:
                     await event.edit("❌ Could not cancel. The item may be processing or completed.")
@@ -3075,7 +3080,7 @@ class BotHandlers:
                 user_msg = details['user_message']
                 admin_reps = details['admin_replies']
                 user_message_text = user_msg['user_message_text'] if len(user_msg['user_message_text']) <= 1000 else user_msg['user_message_text'][:994] + "......"
-                sent_time = user_msg['timestamp_sent'].strftime('%Y-%m-%d %H:%M:%S')
+                sent_time = user_msg['action_time_sent'].strftime('%Y-%m-%d %H:%M:%S')
                 safe_user_name = html.escape(user_msg['user_full_name'])
                 safe_user_message = html.escape(user_message_text)
                 response_text = (
@@ -3095,7 +3100,7 @@ class BotHandlers:
                             response_text += "\n\nThere are <b>some more replies left</b> but the message got too long, so please check the database yourself."
                             break
                         
-                        reply_time = reply['timestamp_replied'].strftime('%H:%M:%S on %Y-%m-%d')
+                        reply_time = reply['action_time_replied'].strftime('%H:%M:%S on %Y-%m-%d')
                         admin_name = reply['admin_full_name'][:20] or "N/A"
                         admin_reply_text = reply['admin_reply_text'] if len(reply['admin_reply_text']) <= 100 else reply['admin_reply_text'][0:96]+ "..."
                         safe_admin_name = html.escape(admin_name)
