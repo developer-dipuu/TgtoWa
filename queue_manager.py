@@ -11,9 +11,9 @@ from telethon import events
 
 logger = logging.getLogger(__name__)
 # Priority Levels
-SYSTEM_PRIORITY = 0
-REGULAR_USER_PRIORITY = 1
-PREMIUM_USER_PRIORITY = 2
+SYSTEM_PRIORITY = 3
+REGULAR_USER_PRIORITY = 2
+PREMIUM_USER_PRIORITY = 1
 
 @dataclass
 class QueueItem:
@@ -73,7 +73,7 @@ class QueueManager:
             # Insert into the main queue based on priority.
             insert_at = len(self.queue)
             for i, existing_item in enumerate(self.queue):
-                if existing_item.priority < queue_item.priority:
+                if existing_item.priority > queue_item.priority:
                     insert_at = i
                     break
             self.queue.insert(insert_at, queue_item)
