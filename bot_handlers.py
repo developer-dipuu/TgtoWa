@@ -16,8 +16,8 @@ from telethon.errors import UserIsBlockedError, ChatAdminRequiredError
 from telethon.errors.rpcerrorlist import UserNotParticipantError
 from telethon.events import StopPropagation
 from telethon.tl.functions.channels import GetParticipantRequest
-from telethon.tl.functions.messages import SendReactionRequest
-from telethon.tl.types import DocumentAttributeSticker, DocumentAttributeCustomEmoji, Message, ReactionEmoji
+from telethon.tl.functions.messages import SendReactionRequest, GetCustomEmojiDocumentsRequest
+from telethon.tl.types import MessageEntityCustomEmoji, DocumentAttributeSticker, DocumentAttributeCustomEmoji, Message, ReactionEmoji 
 from typing import Optional, Sequence, List, Dict, Any
 
 from config import *
@@ -995,15 +995,6 @@ class BotHandlers:
         if not await self.check_user_membership(user.id):
             await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
             return
-        
-        # if not a text or sticker
-        if not (event.text or event.sticker):
-            await event.reply(
-                    "❌ **Invalid input!**\n\n"
-                    "Please send a valid Telegram sticker or emoji pack link, "
-                    "or forward a sticker/emoji from the pack you want to convert."
-                )
-            return
 
         is_premium = db.is_premium(user.id)
         limit = MAX_CONCURRENT_PREMIUM_REQUESTS if is_premium else MAX_CONCURRENT_REGULAR_REQUESTS
@@ -1032,14 +1023,32 @@ class BotHandlers:
             
             if event.text:
                 # if a text 
-                pack_input = extract_pack_name_from_url(event.text)
-                if not pack_input:
-                    await event.reply(
-                        "❌ **Invalid input!**\n\n"
-                        "Please send a valid Telegram sticker or emoji pack link, "
-                        "or forward a sticker/emoji from the pack you want to convert."
-                    )
-                    return
+                done = False
+                if not done:
+                    if event.message.entities: # if it has custom emojis
+                        for entity in event.message.entities:
+                            if isinstance(entity, MessageEntityCustomEmoji):
+                                emoji_docs = await self.client(GetCustomEmojiDocumentsRequest(document_id=[entity.document_id]))
+                                if not emoji_docs:
+                                    done = False
+                                    break
+                                # first_emoji_doc = emoji_docs[0]
+                                # print(first_emoji_doc.stringify())
+                                for attribute in emoji_docs[0].attributes:
+                                    if isinstance(attribute, DocumentAttributeCustomEmoji):
+                                        pack_input = attribute.stickerset
+                                        done=True
+                                        break
+                                break
+                if not done: # assume its a link 
+                    pack_input = extract_pack_name_from_url(event.text)
+                    if not pack_input:
+                        await event.reply(
+                            "❌ **Invalid input!**\n\n"
+                            "Please send a valid Telegram sticker or emoji pack link, "
+                            "or forward a sticker/emoji from the pack you want to convert."
+                        )
+                        return
 
             elif event.sticker:
                 # if its a sticker
@@ -1053,22 +1062,14 @@ class BotHandlers:
                         "❌ This sticker doesn't seem to belong to a pack I can access.\n\nPlease forward a sticker from a public sticker pack."
                     )
                     return
-
-            elif event.document and hasattr(event.document, 'attributes'):
-                # if anything else is sent check if its a custom emoji
-                for attr in event.document.attributes:
-                    if isinstance(attr, DocumentAttributeCustomEmoji):
-                        pack_input = attr.stickerset
-                        break
-                
-                if not pack_input:
-                    # if that document aint an emoji
-                    await event.reply(
+            else:
+                # if not a text or sticker
+                await event.reply(
                         "❌ **Invalid input!**\n\n"
                         "Please send a valid Telegram sticker or emoji pack link, "
                         "or forward a sticker/emoji from the pack you want to convert."
                     )
-                    return
+                return
                 
             # Fetch the sticker/emoji set to get its actual name and type
             try:
