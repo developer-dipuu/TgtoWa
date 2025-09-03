@@ -72,7 +72,7 @@ class NetworkTask:
         self.client = client
 
     # to get the sticker object (information, its not downloading the pack), it is called in the handle_message
-    async def get_sticker_set(self, pack_input: Any):
+    async def get_sticker_set(self, pack_input: Any, access_hash: int | None = None):
         """
         Get sticker/emoji set from Telegram using either a short name (str) 
         or a concrete InputStickerSet type (like InputStickerSetID).
@@ -82,6 +82,8 @@ class NetworkTask:
             if isinstance(pack_input, str):
                 # If we get a string, we assume it's a short_name
                 input_set = InputStickerSetShortName(short_name=pack_input)
+            elif isinstance(pack_input, int) and access_hash:
+                input_set = InputStickerSetID(id=pack_input, access_hash=access_hash)
             elif isinstance(pack_input, (InputStickerSetID, InputStickerSetShortName)):
                 # If we get a valid InputStickerSet object, use it directly
                 input_set = pack_input
@@ -398,19 +400,19 @@ def is_valid_sticker_url(url: str) -> bool:
     """Check if URL is a valid Telegram sticker or emoji pack URL"""
     return extract_pack_name_from_url(url) is not None
 
-def estimate_wait_time(sticker_documents: list, num_packs: Optional[int]) -> float:
+def estimate_wait_time(sticker_doc_info: list, num_packs: int | None = None) -> float:
     """
     Calculates estimated wait time in seconds based on the type of each sticker/emoji.
     """
     total_seconds = 0.0
 
     # Time for processing each sticker/emoji
-    for doc in sticker_documents:
-        if doc.mime_type == 'application/x-tgsticker':  # TGS file
+    for doc in sticker_doc_info:
+        if doc == 'application/x-tgsticker':  # TGS file
             total_seconds += 2
-        elif doc.mime_type == 'video/webm':  # WebM
+        elif doc == 'video/webm':  # WebM
             total_seconds += 1
-        elif doc.mime_type == 'image/webp': # WebP
+        elif doc == 'image/webp': # WebP
             total_seconds += 0.1
         else: # Others if any, we prbbly wont get any
             total_seconds += 1

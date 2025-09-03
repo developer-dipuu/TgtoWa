@@ -18,14 +18,15 @@ PREMIUM_USER_PRIORITY = 1
 @dataclass
 class QueueItem:
     user_id: int
+    chat_id: int
+    message_id: int
     username: str
     bot_reply_message_id: int
-    sticker_set: Any
+    sticker_set_info: dict
     estimated_seconds: float
     log_id: int
     timestamp: datetime
     priority: int
-    event: events.NewMessage.Event
     is_cache_suspicious: bool = False
     is_silent_mode: bool = False
     status: str = "waiting"  # waiting, processing, completed, error
@@ -42,8 +43,9 @@ class QueueManager:
         self.queued_set_ids: set[int] = set()
         self._lock = asyncio.Lock()
     
-    async def add_to_queue(self, user_id: int, username: str, bot_reply_message_id: int,sticker_set: Any, 
-                           estimated_seconds: float, log_id: int, priority: int, event: events.NewMessage.Event, 
+    async def add_to_queue(self, user_id: int, chat_id: int, message_id: int, username: str, 
+                           bot_reply_message_id: int,sticker_set_info: dict, 
+                           estimated_seconds: float, log_id: int, priority: int,
                            is_cache_suspicious: bool, is_silent_mode: bool = False, 
                             custom_title: Optional[str] = None, custom_author: Optional[str] = None) -> int:
         """Add user to queue and return position"""
@@ -51,14 +53,15 @@ class QueueManager:
             
             queue_item = QueueItem(
                 user_id=user_id,
+                chat_id=chat_id,
+                message_id=message_id,
                 username=username,
                 bot_reply_message_id=bot_reply_message_id,
-                sticker_set=sticker_set,
+                sticker_set_info=sticker_set_info,
                 estimated_seconds=estimated_seconds,
                 log_id=log_id,
                 timestamp=datetime.now(timezone.utc),
                 priority=priority,
-                event=event,
                 is_cache_suspicious=is_cache_suspicious,
                 is_silent_mode=is_silent_mode,
                 custom_title=custom_title,
@@ -79,11 +82,11 @@ class QueueManager:
             self.queue.insert(insert_at, queue_item)
             
             # add the item's set_id
-            self.queued_set_ids.add(queue_item.sticker_set.set.id)
+            self.queued_set_ids.add(queue_item.sticker_set_info['set_id'])
 
             priority_map = {SYSTEM_PRIORITY: 'system', REGULAR_USER_PRIORITY: 'regular', PREMIUM_USER_PRIORITY: 'premium'}
             priority_str = priority_map.get(priority, 'unknown')
-            logger.info(f"Added {priority_str} user {username} (ID: {user_id}) to queue for pack: {sticker_set.set.short_name}")
+            logger.info(f"Added {priority_str} user {username} (ID: {user_id}) to queue for pack: {sticker_set_info['short_name']}")
             
             # Return the position of the newly added item
             return self.get_queue_position(user_id, specific_item=queue_item)
@@ -98,7 +101,7 @@ class QueueManager:
                 # Remove from the main queue
                 self.queue.remove(item_to_remove)
                 # remove the item's set_id
-                self.queued_set_ids.discard(item_to_remove.sticker_set.set.id)
+                self.queued_set_ids.discard(item_to_remove.sticker_set_info['set_id'])
                 # Remove from the user specific queue
                 user_specific_queue = self.user_queues.get(user_id, [])
                 if item_to_remove in user_specific_queue:
@@ -142,7 +145,7 @@ class QueueManager:
         async with self._lock:
             if self.processing and self.processing.user_id == user_id:
                 # remove the set_id from our tracking set
-                self.queued_set_ids.discard(self.processing.sticker_set.set.id)
+                self.queued_set_ids.discard(self.processing.sticker_set_info['set_id'])
 
                 self.processing.status = "completed" if success else "error"
                 

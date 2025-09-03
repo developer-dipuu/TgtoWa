@@ -39,13 +39,15 @@ class NotificationManager:
         except Exception as e:
             logger.error(f"CRITICAL: FAILED TO SEND NOTIFICATION. Type: {notification_type}. Error: {e}")
 
-    async def send_conversion_failure(self, user_id, user_display_name, log_id, sticker_set, error_type, error_message):
+    async def send_conversion_failure(self, user_id, user_display_name, log_id, error_type, error_message, sticker_set = None, sticker_set_info = None):
         """Sends a notification for a failed sticker conversion."""
         pack_url = "N/A"
         if sticker_set and sticker_set.set:
             pack_type = "addemoji" if sticker_set.set.emojis else "addstickers"
             pack_url = f"https://t.me/{pack_type}/{sticker_set.set.short_name}"
-        
+        elif sticker_set_info:
+            pack_type = "addemoji" if sticker_set_info['is_emoji'] else "addstickers"
+            pack_url = f"https://t.me/{pack_type}/{sticker_set_info['short_name']}"
         safe_user_name = html.escape(user_display_name)
         safe_error_msg = html.escape(str(error_message))
 
