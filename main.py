@@ -7,10 +7,10 @@ import asyncio
 import os
 from telethon import TelegramClient
 
-from config import API_ID, API_HASH, BOT_TOKEN, DATA_DIR
-from bot_handlers import BotHandlers
-from database import init_db
 from notification_manager import NotificationManager
+from config import API_ID, API_HASH, BOT_TOKEN, DATA_DIR
+from database import init_pool, close_pool, init_db
+
 
 # Configure logging
 logging.basicConfig(
@@ -40,8 +40,18 @@ async def main():
     """
     global notification_manager_instance
     os.makedirs(DATA_DIR, exist_ok=True)
-    # Initilize the database
-    init_db()
+
+    #initialise the dabase connection pool of postgres
+    await init_pool()
+
+    # Dont move these imports to top or it'll crash
+    # as QueueManager and SessionManager create their global instances queue_manager and session_manager respectively
+    # which call get_pool and that would crash if init_pool haven't been called yet.
+    # So we cant import them when init_pool havent been called yet.
+    # BotHandlers directly import global instance of both so we cant impot BotHandlers either 
+    from bot_handlers import BotHandlers
+    from session_manager import session_manager
+
     # We use a session name for the bot so it can remember its state.
     # The session file will be created in the DATA_DIR directory.
     client = TelegramClient(f'{DATA_DIR}/bot_session', API_ID, API_HASH)
@@ -49,8 +59,14 @@ async def main():
 
     logger.info("Starting bot...")
     try:
+        # Initilize the database
+        await init_db()
+
         # Start the client with the bot token
         await client.start(bot_token=BOT_TOKEN)
+
+        # Rebuild the session index right after starting and before handling events
+        await session_manager.rebuild_msg_index()
 
         # Initialize NotificationManager AFTER client starts and is ready
         notification_manager_instance = NotificationManager(client)
@@ -75,6 +91,7 @@ async def main():
         if client.is_connected():
             await client.disconnect()
         logger.info("Bot stopped.")
+        await close_pool()
 
 
 if __name__ == "__main__":

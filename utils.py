@@ -21,8 +21,8 @@ import io
 import emoji
 import regex
 
-from config import (DOWNLOAD_TIMEOUT, UPLOAD_TIMEOUT, MAX_DOWNLOAD_RETRIES, OWNER_ID, 
-                    BACKUP_ENABLED, BACKUPS, BACKUP_GROUP_ID, DB_PATH, LOG_DIR, TEMP_DIR)
+from config import (DOWNLOAD_TIMEOUT, UPLOAD_TIMEOUT, DB_UPLOAD_TIMEOUT, DB_DUMP_TIMEOUT, MAX_DOWNLOAD_RETRIES, OWNER_ID, 
+                    BACKUP_ENABLED, BACKUPS, BACKUP_GROUP_ID, LOG_DIR, TEMP_DIR, DB_USER, DB_HOST, DB_PORT, DB_NAME, DB_PASSWORD)
 
 logger = logging.getLogger(__name__)
 
@@ -233,34 +233,75 @@ class BackupManager:
         await asyncio.to_thread(zip_files)
 
     async def _backup_database(self):
-        """Handles zipping and uploading the database file."""
+        """Handles creating a database dump, zipping it, and uploading."""
         logger.info("Starting database backup...")
+        dump_path = None
         zip_path = None
         try:
-            db_file_path = os.path.realpath(os.path.expanduser(DB_PATH))
-            if not os.path.exists(db_file_path):
-                logger.error("Database backup failed: DB file not found.")
+            date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            dump_filename = f"db_backup_{date_str}.sql"
+            dump_path = os.path.join(TEMP_DIR, dump_filename)
+
+            # Create a dictionary for the PGPASSWORD environment variable
+            # This is more secure than putting the password in the command itself
+            env = os.environ.copy()
+            env['PGPASSWORD'] = DB_PASSWORD
+
+            # The command to dump the database to a file
+            process = await asyncio.create_subprocess_exec(
+                'pg_dump',
+                '-U', DB_USER,
+                '-h', DB_HOST,
+                '-p', str(DB_PORT),
+                '-d', DB_NAME,
+                '-f', dump_path,
+                '--clean', # Add this to drop existing objects before recreating
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=DB_DUMP_TIMEOUT)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                logger.error(f"Database backup pg_dump timed out after {DB_DUMP_TIMEOUT} seconds.")
+                await self.client.send_message(OWNER_ID, f"❌ **Database Backup Failed!**\n\n`pg_dump` timed out after {DB_DUMP_TIMEOUT} seconds.")
+                return
+            if process.returncode != 0:
+                error_message = stderr.decode(errors="replace").strip() if stderr else "No error output"
+                logger.error(f"pg_dump failed with return code {process.returncode}: {error_message}")
+                await self.client.send_message(OWNER_ID, f"❌ **Database Backup Failed!**\n\n`pg_dump` error:\n```{error_message}```")
                 return
 
-            date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            logger.info(f"Database dump created successfully at {dump_path}")
+
             zip_filename = f"db_backup_{date_str}.zip"
             zip_path = os.path.join(TEMP_DIR, zip_filename)
 
-            await self._create_zip_archive([db_file_path], zip_path)
+            await self._create_zip_archive([dump_path], zip_path)
 
             caption = f"#db_backup\nDate: {date_str} UTC"
-            await self.client.send_file(
-                BACKUP_GROUP_ID,
-                file=zip_path,
-                caption=caption
-            )
+            try:
+                await asyncio.wait_for(self.client.send_file(
+                    BACKUP_GROUP_ID,
+                    file=zip_path,
+                    caption=caption
+                ), timeout=DB_UPLOAD_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error(f"Database backup upload timed out after {DB_UPLOAD_TIMEOUT} seconds.")
+                await self.client.send_message(OWNER_ID, f"❌ **Database Backup Failed!**\n\nUpload timed out after {DB_UPLOAD_TIMEOUT} seconds.")
+                return
             logger.info("Successfully uploaded database backup.")
 
         except Exception as e:
             logger.error(f"Database backup process failed: {e}", exc_info=True)
+            await self.client.send_message(OWNER_ID, f"❌ **Database Backup Failed!**\n\nError:\n```{e}```")
         finally:
+            if dump_path and os.path.exists(dump_path):
+                os.remove(dump_path) # Clean up the .sql dump
             if zip_path and os.path.exists(zip_path):
-                os.remove(zip_path)
+                os.remove(zip_path) # Clean up the .zip file
 
     async def _backup_logs(self):
         """Handles zipping and uploading log files."""

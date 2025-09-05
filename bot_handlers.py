@@ -24,7 +24,7 @@ from config import *
 from utils import *
 from queue_manager import queue_manager, SYSTEM_PRIORITY, REGULAR_USER_PRIORITY, PREMIUM_USER_PRIORITY
 from sticker_converter import StickerConverter
-from session_manager import SessionManager, Flow, Session
+from session_manager import session_manager, Flow, Session
 import database as db
 from notification_manager import NotificationManager
 from utils import BackupManager
@@ -41,7 +41,6 @@ class BotHandlers:
         self.client = client
         self.network_task = NetworkTask(self.client)
         self.converter = StickerConverter(self.client)
-        self.session_manager = SessionManager()
         self.notification_manager = notification_manager
         self.backup_manager = BackupManager(self.client)
         self.processing_lock = asyncio.Lock()
@@ -66,7 +65,7 @@ class BotHandlers:
         )
         #background tasks for cleanup
         asyncio.create_task(self._reply_locks_cleanup_loop(ttl_seconds=3600))
-        asyncio.create_task(self._session_cleanup_loop(check_interval_seconds=600))
+        asyncio.create_task(self._db_cleanup_loop())
         asyncio.create_task(self._premium_users_cleanup_loop(check_interval_seconds=86400))
         asyncio.create_task(self._calculate_popular_packs_loop())
         asyncio.create_task(self._callback_locks_cleanup_loop(ttl_seconds=3600, check_interval_seconds=600))
@@ -75,7 +74,7 @@ class BotHandlers:
     def check_banned(func):
         """Decorator to check if a user is banned before executing a command."""
         async def wrapper(self, event):
-            if db.is_banned(event.sender_id):
+            if await db.is_banned(event.sender_id):
                 logger.warning(f"Banned user {event.sender_id} tried to use the bot.")
                 raise StopPropagation # Ignore
             return await func(self, event)
@@ -180,19 +179,21 @@ class BotHandlers:
                 await asyncio.sleep(3600)
             logger.info("cleaned up old admin locks.")
 
-    async def _session_cleanup_loop(self, check_interval_seconds: int = 600):
-        """Periodically cleans up expired and old user sessions."""
+    async def _db_cleanup_loop(self, check_interval_seconds: int = 3600):
+        """Periodically cleans up old data from the database."""
         while True:
             await asyncio.sleep(check_interval_seconds)
             try:
-                await self.session_manager.cleanup()
+                # The managers handle all the cleanup logics
+                await session_manager.cleanup()
+                await queue_manager.cleanup_queue()
             except Exception as e:
-                logger.error(f"FATAL: The _session_cleanup_loop crashed: {e}", exc_info=True)
+                logger.error(f"FATAL: The _db_cleanup_loop crashed: {e}", exc_info=True)
                 await self.notification_manager.send_uncaught_exception(
                     (type(e), e, e.__traceback__)
                 )
+                # Wait a while before retrying if it crashes
                 await asyncio.sleep(3600)
-            logger.info("Periodic session cleanup finished.")
 
     async def _premium_users_cleanup_loop(self, check_interval_seconds: int = 86400):
         """Periodically cleans up expired premium users from the database."""
@@ -201,7 +202,7 @@ class BotHandlers:
             await asyncio.sleep(check_interval_seconds)
             try:
                 logger.info("Running scheduled cleanup of expired premium users...")
-                removed_count = db.remove_expired_premium_users()
+                removed_count = await db.remove_expired_premium_users()
                 if removed_count > 0:
                     logger.info(f"SYSTEM: Automatically removed {removed_count} expired premium users.")
                 else:
@@ -216,8 +217,8 @@ class BotHandlers:
     async def _refresh_popular_packs_cache(self):
         """Fetches popular packs from DB and loads them into memory."""
         try:
-            self.daily_popular_packs = await asyncio.to_thread(db.get_popular_packs, 'daily')
-            self.all_time_popular_packs = await asyncio.to_thread(db.get_popular_packs, 'all_time')
+            self.daily_popular_packs = await db.get_popular_packs('daily')
+            self.all_time_popular_packs = await db.get_popular_packs('all_time')
             logger.info(f"Popular packs refreshed. Loaded {len(self.daily_popular_packs)} daily and {len(self.all_time_popular_packs)} all-time packs.")
         except Exception as e:
             logger.error(f"Failed to refresh in-memory popular packs cache: {e}")
@@ -250,7 +251,7 @@ class BotHandlers:
         """Periodically calculates and stores popular packs."""
         # Run once on startup to ensure data is available immediately
         try:
-            await asyncio.to_thread(db.calculate_and_store_popular_packs)
+            await db.calculate_and_store_popular_packs()
             await self._refresh_popular_packs_cache()
         except Exception as e:
             logger.error(f"Initial popular packs calculation failed: {e}")
@@ -264,7 +265,7 @@ class BotHandlers:
                 await asyncio.sleep(sleep_seconds)
                 
                 # Run the blocking DB function in a separate thread
-                await asyncio.to_thread(db.calculate_and_store_popular_packs)
+                await db.calculate_and_store_popular_packs()
                 await self._refresh_popular_packs_cache()
                 logger.info(f"Popular packs refreshed.")
 
@@ -317,7 +318,7 @@ class BotHandlers:
         return True
     
     async def delete_cache(self, set_id):
-        position = db.remove_from_cache(set_id) 
+        position = await db.remove_from_cache(set_id) 
         if position:
             channel_id, message_ids = position
             try:
@@ -338,7 +339,7 @@ class BotHandlers:
         messages_to_delete = {} # {channel1: [msg4,msg5,msg6], channel2: [msg10,msg11,msg12] }
 
         for set_id in set_ids:
-            position = db.remove_from_cache(set_id)
+            position = await db.remove_from_cache(set_id)
             if position:
                 channel_id, message_ids = position
                 messages_to_delete.setdefault(channel_id, []).extend(message_ids)
@@ -450,6 +451,60 @@ class BotHandlers:
             logger.error(f"General error in check_user_membership for user {user_id}: {e}")
             return False
 
+    async def _get_pack_input_from_event(self, event: events.NewMessage.Event) -> Any | None:
+        """
+        Parses an event to find sticker pack input from text, links, stickers, or custom emoji.
+        Returns the pack input (e.g., stickerset, short_name) or None if not found.
+        """
+        pack_input = None
+        
+        if event.text:
+            # if a text 
+            done = False
+            if event.message.entities: # if it has custom emojis
+                for entity in event.message.entities:
+                    if isinstance(entity, MessageEntityCustomEmoji):
+                        emoji_docs = await self.client(GetCustomEmojiDocumentsRequest(document_id=[entity.document_id]))
+                        if not emoji_docs:
+                            break
+                        # first_emoji_doc = emoji_docs[0]
+                        # print(first_emoji_doc.stringify())
+                        for attribute in emoji_docs[0].attributes:
+                            if isinstance(attribute, DocumentAttributeCustomEmoji):
+                                pack_input = attribute.stickerset
+                                done=True
+                                break
+                        break
+            if not done: # assume its a link 
+                pack_input = extract_pack_name_from_url(event.text)
+                if not pack_input:
+                    await event.reply(
+                        "❌ **Invalid input!**\n\n"
+                        "Please send a valid Telegram sticker or emoji pack link, "
+                        "or forward a sticker/emoji from the pack you want to convert."
+                    )
+
+        elif event.sticker:
+            # if its a sticker
+            for attr in event.sticker.attributes:
+                if isinstance(attr, DocumentAttributeSticker):
+                    pack_input = attr.stickerset
+                    break
+            
+            if not pack_input:
+                await event.reply(
+                    "❌ This sticker doesn't seem to belong to a pack I can access.\n\nPlease forward a sticker from a public sticker pack."
+                )
+        else:
+            # if not a text or sticker
+            await event.reply(
+                    "❌ **Invalid input!**\n\n"
+                    "Please send a valid Telegram sticker or emoji pack link, "
+                    "or forward a sticker/emoji from the pack you want to convert."
+                )
+
+        return pack_input
+
     async def check_cache(self, chat_id, sender_id, msg_to_reply_id, sticker_set_info, log_id: Optional[int] = None) -> bool:
         """Checks if the sticker set is cached or not if cached it will diresticker_setctly send those files and return True,
         else it will handle cache inconsistencies if any and return False"""
@@ -459,12 +514,13 @@ class BotHandlers:
         current_sticker_count = len(sticker_set_info['doc_info'])
 
         # Check if the pack is cached and up-to-date
-        cache_status, channel_id, message_ids = db.is_pack_cached(set_id, current_title, current_sticker_count)
+        cache_status, channel_id, message_ids = await db.is_pack_cached(set_id, current_title, current_sticker_count)
         
         # --- hehe cache hit ---
         if cache_status == 'hit':
             # Verify the cached files actually exist
             if None not in await self.client.get_messages(channel_id, ids=message_ids):
+                await db.record_cache_hit(set_id)
                 logger.info(f"✅ Cache hit for pack {set_id} in channel {channel_id}. Forwarding to user {user_id}.")
                 num_packs = len(message_ids)
                 
@@ -473,7 +529,7 @@ class BotHandlers:
                 pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
                 pack_url = f"https://t.me/{pack_type_url}/{sticker_set_info['short_name']}"
                 if log_id is None:
-                    log_id = db.log_conversion_request(user_id, set_id, pack_url, is_emoji_pack)
+                    log_id = await db.log_conversion_request(user_id, set_id, pack_url, is_emoji_pack)
                 
                 await self.client.send_message(chat_id, f"✅ Found this pack in the cache! Sending **{num_packs}** file(s) instantly...", reply_to=msg_to_reply_id)
 
@@ -484,19 +540,19 @@ class BotHandlers:
 
                     logger.info(f"✅ Successfully forwarded pack {set_id} from cache to user {user_id}.")
                     await self.client.send_message(chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
-                    db.update_conversion_log(log_id, "completed_from_cache", datetime.now(timezone.utc), 0.0)
+                    await db.update_conversion_log(log_id, "completed_from_cache", datetime.now(timezone.utc), 0.0)
                     return True
                 except UserIsBlockedError:
                     # some dumbass block the bot even when it is sending files
                     logger.error(f"User has blocked the bot! Failed to forward cached messages for pack {set_id} to user {user_id}.")
-                    db.update_conversion_log(log_id, "completed_from_cache_but_blocked", datetime.now(timezone.utc), 0.0)
+                    await db.update_conversion_log(log_id, "completed_from_cache_but_blocked", datetime.now(timezone.utc), 0.0)
                     return True
                 # if all successful upload
                 except Exception as e:
                     logger.error(f"Failed to forward cached messages for pack {set_id} to user {user_id}: {e}")
                     # If forwarding fails, it's a critical error. Let's treat it as a cache miss and re-convert.
                     await self.client.send_message(chat_id, "🤔 Oops! I found this in the cache, but couldn't send it. I'll try re-converting it for you now.", reply_to=msg_to_reply_id)
-                    db.update_conversion_log(log_id, "failed_forward_from_cache", datetime.now(timezone.utc), 0.0)
+                    await db.update_conversion_log(log_id, "failed_forward_from_cache", datetime.now(timezone.utc), 0.0)
                     # clear the broken cache
                     asyncio.create_task(self.delete_cache(set_id))
             else:
@@ -538,16 +594,15 @@ class BotHandlers:
             'awaiting_addcache_input'
         }
 
-        user_flows = await self.session_manager.get_all_user_sessions(user_id)
-        for flow_val, sessions in user_flows.items():
+        user_flows = await session_manager.get_all_user_sessions(user_id)
+        for flow_val, sessions_list in user_flows.items():
             try:
                 flow = Flow(flow_val) # Convert string from dict key back to Enum
-                for session in sessions.values():
-                    # We check if the session is active and its state requires input
-                    if session.active and session.state in INPUT_AWAITING_STATES:
+                for session in sessions_list:
+                    # We check if the session's state requires input
+                    if session.state in INPUT_AWAITING_STATES:
                         active_sessions_with_flow.append((session, flow))
             except ValueError:
-                # This could happen if a Flow is removed from the Enum but still exists in the store
                 logger.warning(f"Found session with unknown flow '{flow_val}' for user {user_id}")
 
         return active_sessions_with_flow
@@ -604,7 +659,7 @@ class BotHandlers:
         
         # Tag all the ambiguous sessions with the ID of the prompt we just sent
         for session, flow in sessions_with_flow:
-            await self.session_manager.update(
+            await session_manager.update(
                 event.sender_id,
                 flow,
                 session.session_id,
@@ -626,7 +681,7 @@ class BotHandlers:
             all_active = await self._get_active_input_sessions(user_id)
             for active_session, active_flow in all_active:
                 if 'ambiguity_prompt_id' in active_session.payload:
-                    await self.session_manager.update(
+                    await session_manager.update(
                         user_id,
                         active_flow,
                         active_session.session_id,
@@ -635,16 +690,16 @@ class BotHandlers:
 
         # --- CONTACT MESSAGE ---
         if flow == Flow.CONTACT and session.state == 'awaiting_contact_message':
-            await self.session_manager.expire(user_id, Flow.CONTACT, session.session_id) # Expire after use
+            await session_manager.expire(user_id, Flow.CONTACT, session.session_id) # Expire after use
 
             message_content = self._get_message_content_for_db(event.message)
-            contact_id = db.log_contact_message(user_id, event.message.id, message_content)
-            admin_ids = db.get_all_admin_ids()
+            contact_id = await db.log_contact_message(user_id, event.message.id, message_content)
+            admin_ids = await db.get_all_admin_ids()
 
             user = await event.get_sender()
             user_display_name = get_user_display_name(user)
-            role = "⭐ Premium User" if db.is_premium(user.id) else "👤 Regular User"
-            stats = db.get_user_stats(user.id)
+            role = "⭐ Premium User" if await db.is_premium(user.id) else "👤 Regular User"
+            stats = await db.get_user_stats(user.id)
 
             header_message = CONTACT_ADMIN_NOTIFICATION_HEADER.format(
                 contact_id=contact_id, 
@@ -676,7 +731,7 @@ class BotHandlers:
                 await event.delete()
                 msg = await event.respond("⚠️ Only valid **text messages** are allowed. Please try again.")
                 payload['failed_inputs'].append(msg.id)
-                await self.session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, payload_mutator=lambda p: p.update(payload))
+                await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, payload_mutator=lambda p: p.update(payload))
                 return
 
             user_input = event.text.strip()
@@ -686,7 +741,7 @@ class BotHandlers:
                     await event.delete()
                     msg = await event.respond("⚠️ Title too long (max 50 chars). Please try again.")
                     payload['failed_inputs'].append(msg.id)
-                    await self.session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, payload_mutator=lambda p: p.update(payload))
+                    await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, payload_mutator=lambda p: p.update(payload))
                     return
                 payload['custom_title'] = user_input
 
@@ -695,7 +750,7 @@ class BotHandlers:
                     await event.delete()
                     msg = await event.respond("⚠️ Author too long (max 30 chars). Please try again.")
                     payload['failed_inputs'].append(msg.id)
-                    await self.session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, payload_mutator=lambda p: p.update(payload))
+                    await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, payload_mutator=lambda p: p.update(payload))
                     return
                 payload['custom_author'] = user_input
 
@@ -704,7 +759,7 @@ class BotHandlers:
             payload['failed_inputs'] = []
 
             session.state = 'awaiting_customization_choice' # Go back to the main menu
-            await self.session_manager.update(
+            await session_manager.update(
                 user_id, Flow.CUSTOMIZE, session.session_id,
                 state='awaiting_customization_choice',
                 payload_mutator=lambda p: p.update(payload),
@@ -721,57 +776,11 @@ class BotHandlers:
 
     async def _execute_interactive_addcache(self, event: events.NewMessage.Event):
         """Handles a single pack submission in interactive add-cache mode."""
-        pack_input = None
-        if event.text:
-            # if a text 
-            done = False
-            if not done:
-                if event.message.entities: # if it has custom emojis
-                    for entity in event.message.entities:
-                        if isinstance(entity, MessageEntityCustomEmoji):
-                            emoji_docs = await self.client(GetCustomEmojiDocumentsRequest(document_id=[entity.document_id]))
-                            if not emoji_docs:
-                                done = False
-                                break
-                            # first_emoji_doc = emoji_docs[0]
-                            # print(first_emoji_doc.stringify())
-                            for attribute in emoji_docs[0].attributes:
-                                if isinstance(attribute, DocumentAttributeCustomEmoji):
-                                    pack_input = attribute.stickerset
-                                    done=True
-                                    break
-                            break
-            if not done: # assume its a link 
-                pack_input = extract_pack_name_from_url(event.text)
-                if not pack_input:
-                    await event.reply(
-                        "❌ **Invalid input!**\n\n"
-                        "Please send a valid Telegram sticker or emoji pack link, "
-                        "or forward a sticker/emoji from the pack you want to convert."
-                    )
-                    return
+        pack_input  = await self._get_pack_input_from_event(event)
 
-        elif event.sticker:
-            # if its a sticker
-            for attr in event.sticker.attributes:
-                if isinstance(attr, DocumentAttributeSticker):
-                    pack_input = attr.stickerset
-                    break
-            
-            if not pack_input:
-                await event.reply(
-                    "❌ This sticker doesn't seem to belong to a pack I can access.\n\nPlease forward a sticker from a public sticker pack."
-                )
-                return
-        else:
-            # if not a text or sticker
-            await event.reply(
-                    "❌ **Invalid input!**\n\n"
-                    "Please send a valid Telegram sticker or emoji pack link, "
-                    "or forward a sticker/emoji from the pack you want to convert."
-                )
+        if not pack_input:
             return
-
+        
         try:
             sticker_set = await self.network_task.get_sticker_set(pack_input)
             if not sticker_set or not sticker_set.documents:
@@ -783,11 +792,12 @@ class BotHandlers:
             set_title = sticker_set.set.title
             set_count = len(sticker_set.documents)
 
-            cache_status, channel_id, message_ids = db.is_pack_cached(set_id, set_title, set_count, is_system_process=True)
+            cache_status, channel_id, message_ids = await db.is_pack_cached(set_id, set_title, set_count)
 
             if cache_status == 'hit':
                 messages = await self.client.get_messages(channel_id, ids=message_ids)
                 if messages and all(msg is not None for msg in messages):
+                    await db.record_cache_hit(set_id, is_system_process=True)
                     await event.reply(f"✅ Pack '{set_title}' is already in the cache. Skipped.")
                     return
                 else:
@@ -801,7 +811,7 @@ class BotHandlers:
 
             is_emoji = sticker_set.set.emojis
             pack_url = f"https://t.me/add{'emoji' if is_emoji else 'stickers'}/{sticker_set.set.short_name}"
-            log_id = db.log_conversion_request(system_id, set_id, pack_url, is_emoji)
+            log_id = await db.log_conversion_request(system_id, set_id, pack_url, is_emoji)
             
             sticker_set_doc_mime_type = [doc.mime_type for doc in sticker_set.documents]
             sticker_set_info = {"set_id": sticker_set.set.id, "access_hash": sticker_set.set.access_hash, "short_name": sticker_set.set.short_name, "is_emoji": sticker_set.set.emojis, "doc_info": sticker_set_doc_mime_type, "title": sticker_set.set.title, }
@@ -817,7 +827,8 @@ class BotHandlers:
             await placeholder.edit(f"✅ Queued `{set_title}` for caching at position {position}.")
             
             if not self.processing_lock.locked():
-                if not queue_manager.get_queue_stats()["currently_processing"]:
+                queue_stats = await queue_manager.get_queue_stats()
+                if not queue_stats["currently_processing"]:
                     asyncio.create_task(self.process_queue())
 
         except Exception as e:
@@ -835,7 +846,7 @@ class BotHandlers:
             "custom_author": None,
             "failed_inputs": []
         }
-        session = await self.session_manager.create(
+        session = await session_manager.create(
             user_id=user_id,
             flow=Flow.CUSTOMIZE,
             state="awaiting_customization_choice",
@@ -879,7 +890,7 @@ class BotHandlers:
                     reply_to=original_event_info['message_id']
                 )
                 payload['prompt_message_id'] = bot_message.id
-                await self.session_manager.update(user_id, Flow.CUSTOMIZE, sid, payload_mutator=lambda p: p.update(payload))
+                await session_manager.update(user_id, Flow.CUSTOMIZE, sid, payload_mutator=lambda p: p.update(payload))
             else:
                 await self.client.edit_message(
                     original_event_info['chat_id'],
@@ -924,13 +935,13 @@ class BotHandlers:
         pack_url = f"https://t.me/{pack_type_url}/{sticker_set_info['short_name']}"
 
         # Log the request to the database
-        log_id = db.log_conversion_request(user.id, set_id, pack_url, is_emoji_pack)
+        log_id = await db.log_conversion_request(user.id, set_id, pack_url, is_emoji_pack)
 
         # send adding to queue message
         placeholder_message = await self.client.send_message(entity=event_info['chat_id'], message="⌛ Adding to the queue...", reply_to=event_info['message_id'])
 
         # Determine if this pack is "cache suspicious"
-        is_suspicious = not custom_title and not custom_author and self.cache_enabled and queue_manager.is_set_id_queued(set_id)
+        is_suspicious = not custom_title and not custom_author and self.cache_enabled and await queue_manager.is_set_id_queued(set_id)
         if is_suspicious:
             logger.info(f"Queueing pack {set_id} as 'cache suspicious'.")
 
@@ -979,7 +990,8 @@ class BotHandlers:
 
         if not self.processing_lock.locked():
             # Check if anyone is processing before starting a new process_queue task
-            is_processing = queue_manager.get_queue_stats()["currently_processing"]
+            queue_stats = await queue_manager.get_queue_stats()
+            is_processing = queue_stats["currently_processing"]
             if not is_processing:
                 asyncio.create_task(self.process_queue())
 
@@ -993,7 +1005,7 @@ class BotHandlers:
         user = await event.get_sender()
 
         # ------ handle admin replies -------
-        if event.is_reply and db.is_admin(user.id):
+        if event.is_reply and await db.is_admin(user.id):
             if await self.handle_admin_reply(event): # if it was handled
                 raise StopPropagation 
 
@@ -1001,11 +1013,12 @@ class BotHandlers:
         session_from_reply = None
         flow_from_reply = None
         if event.is_reply:
-            session_info = await self.session_manager.from_reply(event.chat_id, event.reply_to_msg_id)
-            if session_info:
-                uid, flow_val, sid = session_info
-                flow_from_reply = Flow(flow_val) # convert back to Enum
-                session_from_reply = await self.session_manager.get(uid, flow_from_reply, sid)
+            session_from_reply_tuple = await session_manager.from_reply(event.chat_id, event.reply_to_msg_id)
+            session_from_reply = None
+            if session_from_reply_tuple:
+                user_id, flow_val, session_id = session_from_reply_tuple
+                flow_from_reply = Flow(flow_val)
+                session_from_reply = await session_manager.get(user_id, flow_from_reply, session_id)
 
         if session_from_reply and session_from_reply.active:
             # User replied to a session message, process it directly
@@ -1031,17 +1044,18 @@ class BotHandlers:
         # ----- fine its a normal conversion request lets procced --------------
 
         # update the database
-        db.add_or_update_user(user.id, user.username, get_user_display_name(user))
+        await db.add_or_update_user(user.id, user.username, get_user_display_name(user))
         # membership check
         if not await self.check_user_membership(user.id):
             await event.reply(CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
             return
 
-        is_premium = db.is_premium(user.id)
+        is_premium = await db.is_premium(user.id)
         limit = MAX_CONCURRENT_PREMIUM_REQUESTS if is_premium else MAX_CONCURRENT_REGULAR_REQUESTS
 
         # max queue limit
         async with self._user_processing_lock:
+        # This is for some mfs who spam the bot for no reason,we better ban those shits after a few warning but let's see this in future
             current_queue_count = await queue_manager.get_user_queue_count(user.id)
             realistic_position = current_queue_count + (1 if user.id in self._users_adding_to_queue else 0)
             if realistic_position >= limit:
@@ -1060,58 +1074,9 @@ class BotHandlers:
         
         try:        
             # now time to extract pack details based on the type of message sent
-            pack_input = None
-            
-            if event.text:
-                # if a text 
-                done = False
-                if not done:
-                    if event.message.entities: # if it has custom emojis
-                        for entity in event.message.entities:
-                            if isinstance(entity, MessageEntityCustomEmoji):
-                                emoji_docs = await self.client(GetCustomEmojiDocumentsRequest(document_id=[entity.document_id]))
-                                if not emoji_docs:
-                                    done = False
-                                    break
-                                # first_emoji_doc = emoji_docs[0]
-                                # print(first_emoji_doc.stringify())
-                                for attribute in emoji_docs[0].attributes:
-                                    if isinstance(attribute, DocumentAttributeCustomEmoji):
-                                        pack_input = attribute.stickerset
-                                        done=True
-                                        break
-                                break
-                if not done: # assume its a link 
-                    pack_input = extract_pack_name_from_url(event.text)
-                    if not pack_input:
-                        await event.reply(
-                            "❌ **Invalid input!**\n\n"
-                            "Please send a valid Telegram sticker or emoji pack link, "
-                            "or forward a sticker/emoji from the pack you want to convert."
-                        )
-                        return
-
-            elif event.sticker:
-                # if its a sticker
-                for attr in event.sticker.attributes:
-                    if isinstance(attr, DocumentAttributeSticker):
-                        pack_input = attr.stickerset
-                        break
-                
-                if not pack_input:
-                    await event.reply(
-                        "❌ This sticker doesn't seem to belong to a pack I can access.\n\nPlease forward a sticker from a public sticker pack."
-                    )
-                    return
-            else:
-                # if not a text or sticker
-                await event.reply(
-                        "❌ **Invalid input!**\n\n"
-                        "Please send a valid Telegram sticker or emoji pack link, "
-                        "or forward a sticker/emoji from the pack you want to convert."
-                    )
+            pack_input = await self._get_pack_input_from_event(event)
+            if not pack_input:
                 return
-                
             # Fetch the sticker/emoji set to get its actual name and type
             try:
                 sticker_set = await self.network_task.get_sticker_set(pack_input)
@@ -1264,7 +1229,7 @@ class BotHandlers:
 
 
         # update the stats with duration
-        new_cache_score = db.add_or_update_sticker_set_stats(
+        new_cache_score = await db.add_or_update_sticker_set_stats(
             set_id=sticker_set.set.id,
             short_name=pack_short_name,
             is_emoji=is_emoji_pack,
@@ -1279,7 +1244,7 @@ class BotHandlers:
         cached_messages = []
         target_cache_channel = None
         if self.cache_enabled and not item.custom_title and not item.custom_author:
-            target_cache_channel = db.get_or_create_cache_channel()
+            target_cache_channel = await db.get_or_create_cache_channel()
             if target_cache_channel:
                 if not is_silent_mode:
                     await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
@@ -1292,7 +1257,7 @@ class BotHandlers:
                     if all_uploads_succeeded:
                         status_for_db = "completed"
                         cached_messages_id = [cached_message.id for cached_message in cached_messages]
-                        db.add_to_cache(sticker_set.set.id, new_cache_score, target_cache_channel, cached_messages_id)
+                        await db.add_to_cache(sticker_set.set.id, new_cache_score, target_cache_channel, cached_messages_id)
                         logger.info(f"Successfully cached pack {sticker_set.set.id} with message IDs: {cached_messages_id}")
 
                 except* FileUploadTimeoutError as eg_t:
@@ -1443,7 +1408,7 @@ class BotHandlers:
                         if await self.check_cache(item.chat_id, item.user_id, item.message_id, item.sticker_set_info, log_id=item.log_id):
                             logger.info(f"Suspicious item was a cache hit! Skipping conversion.")
                             await self.client.edit_message(entity=item.chat_id, message=item.bot_reply_message_id, text=f"⚡ The pack you requested was processed instantly from the cache.")
-                            await queue_manager.complete_processing(item.user_id, success=True)
+                            await queue_manager.complete_processing(item.id, success=True)
                             continue # Success! Move to the next item in the queue.
                     except Exception as e:
                         logger.error(f"Error during suspicious cache check for log {item.log_id}: {e}")
@@ -1452,18 +1417,21 @@ class BotHandlers:
                 if item.is_silent_mode:
                     sticker_set_info = item.sticker_set_info
                     try:
-                        cache_status, channel_id, msg_ids = db.is_pack_cached(sticker_set_info['set_id'], sticker_set_info['title'], len(sticker_set_info['doc_info']), is_system_process=True)
+                        cache_status, channel_id, msg_ids = await db.is_pack_cached(sticker_set_info['set_id'], sticker_set_info['title'], len(sticker_set_info['doc_info']))
 
                         if cache_status == 'hit':
                             # The DB says it's cached. Let's quickly verify the files are still there.
                             messages = await self.client.get_messages(channel_id, ids=msg_ids)
+
                             if messages and all(m is not None for m in messages):
+                                await db.record_cache_hit(sticker_set_info['set_id'], is_system_process=True) # update last upadted timestamp 
+
                                 # The cache is valid and exists. We can safely skip this redundant job.
                                 logger.info(f"Skipping processing for pack '{sticker_set_info['short_name']}' (Log ID: {item.log_id}) as it's already cached.")
                                 
                                 # We must properly close out this queue item and log it.
-                                db.update_conversion_log(item.log_id, "completed_skipped_pre_cached", datetime.now(timezone.utc), 0.0)
-                                await queue_manager.complete_processing(item.user_id, success=True)
+                                await db.update_conversion_log(item.log_id, "completed_skipped_pre_cached", datetime.now(timezone.utc), 0.0)
+                                await queue_manager.complete_processing(item.id, success=True)
                                 
                                 # And importantly clean up our system job trackers i mean those damn sets
                                 if item.log_id in self.active_refresh_jobs:
@@ -1503,10 +1471,10 @@ class BotHandlers:
                     # Update the database log
                     completion_time = datetime.now(timezone.utc)
                     duration = (completion_time - start_time).total_seconds()
-                    db.update_conversion_log(item.log_id, status_for_db, completion_time, duration)
+                    await db.update_conversion_log(item.log_id, status_for_db, completion_time, duration)
                     if status_for_db.startswith("completed"):
                         success = True
-                    await queue_manager.complete_processing(item.user_id, success)
+                    await queue_manager.complete_processing(item.id, success)
 
                     # check if it was a system generated task ---------      
       
@@ -1550,7 +1518,7 @@ class BotHandlers:
         user = await event.get_sender()
         # Log user on /start
         full_name = f"{user.first_name} {user.last_name or ''}".strip()
-        db.add_or_update_user(user.id, user.username, full_name)
+        await db.add_or_update_user(user.id, user.username, full_name)
         
         buttons = [
             [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
@@ -1577,11 +1545,11 @@ class BotHandlers:
         role = "👤 Regular User"
         if db.is_owner(user.id):
             role = "👑 Owner"
-        elif db.is_admin(user.id):
+        elif await db.is_admin(user.id):
             role = "👮‍♂️ Admin"
-        elif db.is_premium(user.id):
+        elif await db.is_premium(user.id):
             role = "⭐ Premium User"
-            duration_left = db.get_premium_duration_left(user.id)
+            duration_left = await db.get_premium_duration_left(user.id)
             if duration_left:
                 days = duration_left.days
                 hours = duration_left.seconds // 3600
@@ -1589,7 +1557,7 @@ class BotHandlers:
                 role += f"\n⏳ **Expires in**: {days}d {hours}h {minutes}m"
             
         # get conversion stats
-        stats = db.get_user_stats(user.id)
+        stats = await db.get_user_stats(user.id)
         
         message = (
             f"📊 **Your Stats**\n\n"
@@ -1616,8 +1584,8 @@ class BotHandlers:
             f"  • 💬 <b>Priority Support:</b> Get faster help in the support group."
         )
 
-        if db.is_premium(user_id):
-            duration_left = db.get_premium_duration_left(user_id)
+        if await db.is_premium(user_id):
+            duration_left = await db.get_premium_duration_left(user_id)
             days = duration_left.days
             hours = duration_left.seconds // 3600
             
@@ -1654,19 +1622,21 @@ class BotHandlers:
     async def queue_command(self, event: events.NewMessage.Event):
         """Command to check user's position."""
         user = await event.get_sender()
-        position = queue_manager.get_queue_position(user.id)
-        stats = queue_manager.get_queue_stats()
+        position = await queue_manager.get_queue_position(user.id)
+        stats = await queue_manager.get_queue_stats()
+        total = stats["total_waiting"] + (1 if stats["currently_processing"] else 0)
 
-        if position:
-            # User is in the queue
+        if position == -1: # user is processing
+            message = "🚀 Your pack is currently being processed! It should be ready soon."
+            buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
+        elif position > 0: # in queue
             message = QUEUE_CHECK_MESSAGE.format(
                 position=position,
-                total=stats["total_waiting"] + (1 if stats["currently_processing"] else 0)
+                total=total
             )
             buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
-        else:
-            # User is not in the queue
-            message = f"📊 You're not in the queue. Total users waiting: {stats['total_waiting']}."
+        else: # not in the queue
+            message = f"📊 You're not in the queue. Total in queue: {total}."
             buttons = [
                 [Button.inline("🔄 Refresh", b"check_queue")],
                 [Button.inline("🏠 Back to Start", b"start")]
@@ -1722,7 +1692,7 @@ class BotHandlers:
         """Handles the /contact command, prompting the user to send a message."""
         user = await event.get_sender()
 
-        session = await self.session_manager.create(
+        session = await session_manager.create(
             user_id=user.id,
             flow=Flow.CONTACT,
             state="awaiting_confirmation",
@@ -1768,7 +1738,7 @@ class BotHandlers:
 
         async with contact_lock:
             # Check if this message has been replied already
-            previous_replies = db.get_previous_replies(contact_id)
+            previous_replies = await db.get_previous_replies(contact_id)
 
             if not previous_replies:
                 # ------- First reply, no one has replied yet----------
@@ -1785,7 +1755,7 @@ class BotHandlers:
                     # Send reply and logging shits
                     await self.client.send_message(original_user_id, CONTACT_ADMIN_REPLY_HEADER, parse_mode='html')
                     sent_msg = await self.client.send_message(original_user_id, event.message)
-                    db.log_admin_reply(contact_id, admin_id, sent_msg.id, reply_content)
+                    await db.log_admin_reply(contact_id, admin_id, sent_msg.id, reply_content)
                     logger.info(f"Admin {admin_id} replied to user {original_user_id}")
                     await event.reply("✅ Reply sent to the user!")
                 except Exception as e:
@@ -1902,7 +1872,7 @@ class BotHandlers:
 
 
         # all users we have 
-        user_ids = db.get_all_user_ids() 
+        user_ids = await db.get_all_user_ids() 
         if not user_ids:
             await event.reply("❌ No users found in the database to broadcast to.")
             return
@@ -2023,8 +1993,8 @@ class BotHandlers:
 
     async def _get_gstats_message_and_buttons(self) -> tuple[str, list]:
         """Helper to generate the main /gstats message and buttons."""
-        stats = db.get_gstats()
-        q_stats = queue_manager.get_queue_stats()
+        stats = await db.get_gstats()
+        q_stats = await queue_manager.get_queue_stats()
 
         processing_user = q_stats['processing_user'] or "None"
 
@@ -2073,12 +2043,12 @@ class BotHandlers:
                 await event.reply("ℹ️ Usage: `/promote <user_id/@username>` or reply to a user's message.")
                 return
 
-            if db.is_admin(target_user.id):
+            if await db.is_admin(target_user.id):
                 await event.reply(f"️🤷‍♂️ User `{target_user.id}` is already an admin.")
                 return
                 
             full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-            db.add_admin(target_user.id, target_user.username, event.sender_id)
+            await db.add_admin(target_user.id, target_user.username, event.sender_id)
             await event.reply(f"👑 Successfully promoted **{full_name}** (`{target_user.id}`) to Admin!")
             logger.info(f"User {target_user.id} promoted to admin by {event.sender_id}")
         except Exception as e:
@@ -2098,11 +2068,11 @@ class BotHandlers:
                 await event.reply("ℹ️ Usage: `/demote <user_id/@username>` or reply to a user's message.")
                 return
 
-            if not db.is_admin(target_user.id) or db.is_owner(target_user.id):
+            if not await db.is_admin(target_user.id) or db.is_owner(target_user.id):
                 await event.reply(f"🤷‍♂️ User `{target_user.id}` is not a promotable/demotable admin.")
                 return
 
-            if db.remove_admin(target_user.id, event.sender_id):
+            if await db.remove_admin(target_user.id, event.sender_id):
                 full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
                 await event.reply(f"✅ Successfully demoted **{full_name}** (`{target_user.id}`).")
                 logger.info(f"User {target_user.id} demoted by {event.sender_id}")
@@ -2115,19 +2085,65 @@ class BotHandlers:
 
 
     async def getdb_command(self, event: events.NewMessage.Event):
-        """Owner command to get the database file."""    
-        db_path = os.path.realpath(os.path.expanduser(DB_PATH))    
-
-        if os.path.exists(db_path):
+        """Owner command to get a dump of the PostgreSQL database."""
+        dump_path = None
+        try:
             logger.info(f"Owner {event.sender_id} requested the database file.")
+            
+            # Create a temporary file path for the dump
+            dump_filename = f"bot_db_dump_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.sql"
+            dump_path = os.path.join(TEMP_DIR, dump_filename)
+
+            # Let the user owner what's happening
+            status_msg = await event.reply("⚙️ Creating database dump...")
+
+            env = os.environ.copy()
+            env['PGPASSWORD'] = DB_PASSWORD
+
+            process = await asyncio.create_subprocess_exec(
+                'pg_dump',
+                '-U', DB_USER,
+                '-h', DB_HOST,
+                '-p', str(DB_PORT),
+                '-d', DB_NAME,
+                '-f', dump_path,
+                '--clean',
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
             try:
-                await asyncio.wait_for(event.reply("📦 Here is the database file.", file=db_path), DB_UPLOAD_TIMEOUT)
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=DB_DUMP_TIMEOUT)
             except asyncio.TimeoutError:
-                logger.error(f"Database file upload timed out.")
-                await event.reply("❌ Error: Database file upload timed out.")
-        else:
-            logger.error(f"Owner {event.sender_id} requested DB, but it was not found at {db_path}.")
-            await event.reply("❌ Error: `bot_data.db` not found in the specified directory.")
+                process.kill()
+                await process.wait()
+                logger.error("Database dump timed out.")
+                await event.reply("❌ Error: The database dump process timed out.")
+                return
+            if process.returncode != 0:
+                error_message = stderr.decode(errors="replace").strip() if stderr else "No error output"
+                logger.error(f"getdb failed: pg_dump returned {process.returncode}: {error_message}")
+                await status_msg.edit(f"❌ Error creating dump:\n```{error_message}```")
+                return
+            logger.info(f"Database dump created successfully at {dump_path}")
+
+            await status_msg.edit("⬆️ Uploading database dump...")
+            try:
+                await asyncio.wait_for(status_msg.edit("📦 Here is the database dump file.", file = dump_path), timeout=DB_UPLOAD_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error("Database upload timed out.")
+                await event.reply("❌ Error: The database upload timed out.")
+
+            logger.info("Successfully uploaded database dump file.")
+
+        except Exception as e:
+            logger.error(f"An error occurred during /getdb: {e}", exc_info=True)
+            await event.reply(f"❌ An unexpected error occurred:\n```{e}```")
+        finally:
+            # Clean up the temporary dump file
+            if dump_path and os.path.exists(dump_path):
+                os.remove(dump_path)
+        
         raise StopPropagation
 
 
@@ -2249,7 +2265,7 @@ class BotHandlers:
         action_payload = {}
 
         if args[0].lower() == 'all':
-            all_packs = db.get_all_cached_packs()
+            all_packs = await db.get_all_cached_pack_ids()
             if not all_packs:
                 await event.reply("✅ The cache is already empty. Nothing to do!")
                 return
@@ -2337,7 +2353,7 @@ class BotHandlers:
         for log_id in jobs_to_cancel:
             # The OWNER_ID is used as the user_id for system tasks
             if await queue_manager.cancel_item(user_id=SYSTEM_USER_ID, log_id=log_id):
-                db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(timezone.utc), 0.0)
+                await db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(timezone.utc), 0.0)
                 cancelled_count += 1
 
         self.active_refresh_jobs.clear()
@@ -2362,13 +2378,13 @@ class BotHandlers:
             if self.active_refresh_message: await self.client.edit_message(self.active_refresh_message, f"Step 1/2: Clearing entire cache...")
             
             # Clear entire cache
-            all_packs = db.get_all_cached_packs()
+            all_packs = await db.get_all_cached_pack_ids()
             asyncio.create_task(self.delete_multiple_cache(all_packs))
 
             all_packs_short_name = None
             if limit == "all":
-                all_packs_short_name = db.get_all_packs()
-            packs_to_queue = all_packs_short_name if limit == "all" else db.get_top_packs_by_score(limit) 
+                all_packs_short_name = await db.get_all_known_pack_short_names()
+            packs_to_queue = all_packs_short_name if limit == "all" else await db.get_top_packs_by_score(limit) 
 
         elif action_type == "refreshcache_links":
             pack_names = payload['pack_short_names']
@@ -2376,7 +2392,7 @@ class BotHandlers:
             # Clear specified packs and prepare for queueing
             set_ids = []
             for name in pack_names:
-                set_id = db.get_set_id_by_short_name(name)
+                set_id = await db.get_set_id_by_short_name(name)
                 if set_id:
                     set_ids.append(set_id)
             asyncio.create_task(self.delete_multiple_cache(set_ids))
@@ -2400,7 +2416,7 @@ class BotHandlers:
 
                 is_emoji = sticker_set.set.emojis
                 pack_url = f"https://t.me/add{'emoji' if is_emoji else 'stickers'}/{short_name}"
-                log_id = db.log_conversion_request(system_id, sticker_set.set.id, pack_url, is_emoji)
+                log_id = await db.log_conversion_request(system_id, sticker_set.set.id, pack_url, is_emoji)
 
                 sticker_set_doc_mime_type = [doc.mime_type for doc in sticker_set.documents]
                 sticker_set_info = {"set_id": sticker_set.set.id, "access_hash": sticker_set.set.access_hash, "short_name": sticker_set.set.short_name, "is_emoji": sticker_set.set.emojis, "doc_info": sticker_set_doc_mime_type, "title": sticker_set.set.title, }
@@ -2426,7 +2442,8 @@ class BotHandlers:
         self.active_refresh_message = None # We're done editing this message
         # start the queue if its not running
         if not self.processing_lock.locked():
-            is_processing = queue_manager.get_queue_stats()["currently_processing"]
+            queue_stats = await queue_manager.get_queue_stats()
+            is_processing = queue_stats["currently_processing"]
             if not is_processing:
                 asyncio.create_task(self.process_queue())
 
@@ -2484,10 +2501,19 @@ class BotHandlers:
         await event.reply(confirm_message, buttons=buttons)
         raise StopPropagation
 
+    async def _get_active_add_cache_session(self, user_id: int) -> Session | None:
+        """Finds and returns add cache interactive session if exists else None."""
+        user_flows = await session_manager.get_all_user_sessions(user_id)
+        add_cache_sessions = user_flows.get(Flow.ADDCACHE.value)
+
+        if add_cache_sessions:
+            return add_cache_sessions[0]
+        return None
 
     async def canceladdcache_command(self, event: events.NewMessage.Event):
         """Owner command to cancel an ongoing add-cache operation."""
-        active_session = await self.session_manager.get_active_latest(event.sender_id, Flow.ADDCACHE)
+        user_id = event.sender_id
+        active_session = await self._get_active_add_cache_session(user_id)
 
         if not self.active_add_jobs and not active_session:
             await event.reply("✅ No active add-cache operation to cancel.")
@@ -2495,7 +2521,7 @@ class BotHandlers:
         
         # Handle cancelling the interactive mode
         if active_session:
-            await self.session_manager.expire(event.sender_id, Flow.ADDCACHE, active_session.session_id)
+            await session_manager.expire(user_id, Flow.ADDCACHE, active_session.session_id)
             await event.reply("✅ Interactive add-cache mode has been cancelled.")
 
         if not self.active_add_jobs:
@@ -2507,7 +2533,7 @@ class BotHandlers:
         jobs_to_cancel = list(self.active_add_jobs)
         for log_id in jobs_to_cancel:
             if await queue_manager.cancel_item(user_id=SYSTEM_USER_ID, log_id=log_id):
-                db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(timezone.utc), 0.0)
+                await db.update_conversion_log(log_id, "cancelled_by_admin", datetime.now(timezone.utc), 0.0)
                 cancelled_count += 1
 
         self.active_add_jobs.clear()
@@ -2524,9 +2550,10 @@ class BotHandlers:
 
     async def done_command(self, event: events.NewMessage.Event):
         """Owner command to exit interactive add-cache mode."""
-        active_session = await self.session_manager.get_active_latest(event.sender_id, Flow.ADDCACHE)
+        user_id = event.sender_id
+        active_session = await self._get_active_add_cache_session(user_id)
         if active_session:
-            await self.session_manager.expire(event.sender_id, Flow.ADDCACHE, active_session.session_id)
+            await session_manager.expire(user_id, Flow.ADDCACHE, active_session.session_id)
             await event.reply("✅ **Finished!** Exited interactive add-cache mode.")
         else:
             await event.reply("✅ You are not in an active interactive mode.")
@@ -2546,12 +2573,12 @@ class BotHandlers:
 
             elif action_type == "addcache_all":
                 if self.active_add_message: await self.client.edit_message(self.active_add_message, "Step 1/2: Fetching ALL non-cached packs from the database...")
-                packs_to_process = await asyncio.to_thread(db.get_non_cached_packs)
+                packs_to_process = await db.get_non_cached_packs()
 
             elif action_type == "addcache_n":
                 limit = payload['limit']
                 if self.active_add_message: await self.client.edit_message(self.active_add_message, f"Step 1/2: Fetching top {limit} non-cached packs from the database...")
-                packs_to_process = await asyncio.to_thread(db.get_non_cached_packs, limit=limit)
+                packs_to_process = await db.get_non_cached_packs(limit=limit)
         except Exception as e:
             logger.error(f"AddCache: Failed to fetch packs from DB: {e}", exc_info=True)
             if self.active_add_message: await self.client.edit_message(self.active_add_message, f"❌ Failed to fetch pack list from database: {e}")
@@ -2581,12 +2608,13 @@ class BotHandlers:
                 set_title = sticker_set.set.title
                 set_count = len(sticker_set.documents)
 
-                cache_status, channel_id, message_ids = db.is_pack_cached(set_id, set_title, set_count, is_system_process=True)
+                cache_status, channel_id, message_ids = await db.is_pack_cached(set_id, set_title, set_count)
                 
                 if cache_status == 'hit':
                     try:
                         messages = await self.client.get_messages(channel_id, ids=message_ids)
                         if messages and all(msg is not None for msg in messages):
+                            await db.record_cache_hit(set_id, is_system_process=True)
                             skipped_count += 1
                             continue
                         else:
@@ -2602,7 +2630,7 @@ class BotHandlers:
 
                 is_emoji = sticker_set.set.emojis
                 pack_url = f"https://t.me/add{'emoji' if is_emoji else 'stickers'}/{short_name}"
-                log_id = db.log_conversion_request(system_id, sticker_set.set.id, pack_url, is_emoji)
+                log_id = await db.log_conversion_request(system_id, sticker_set.set.id, pack_url, is_emoji)
                 
                 sticker_set_doc_mime_type = [doc.mime_type for doc in sticker_set.documents]
                 sticker_set_info = {"set_id": sticker_set.set.id, "access_hash": sticker_set.set.access_hash, "short_name": sticker_set.set.short_name, "is_emoji": sticker_set.set.emojis, "doc_info": sticker_set_doc_mime_type, "title": sticker_set.set.title, }
@@ -2636,7 +2664,8 @@ class BotHandlers:
 
         self.active_add_message = None
         if not self.processing_lock.locked():
-            is_processing = queue_manager.get_queue_stats()["currently_processing"]
+            queue_stats = await queue_manager.get_queue_stats()
+            is_processing = queue_stats["currently_processing"]
             if not is_processing:
                 asyncio.create_task(self.process_queue())
 
@@ -2644,7 +2673,7 @@ class BotHandlers:
 
     async def add_premium_command(self, event: events.NewMessage.Event):
         """Admin command to add a premium user."""
-        if not db.is_admin(event.sender_id):
+        if not await db.is_admin(event.sender_id):
             raise StopPropagation # Silently ignore for non-admins
 
         user_arg = event.pattern_match.group(1)
@@ -2679,13 +2708,13 @@ class BotHandlers:
             await event.reply("❌ **Invalid duration.** Please provide a positive number of days.")
             raise StopPropagation
         
-        if db.is_premium(target_user.id):
+        if await db.is_premium(target_user.id):
             await event.reply("🤷‍♂️ This user is already premium. Use `/extendpremium` to extend their duration.")
             raise StopPropagation
             
         try:
             full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-            db.add_premium(target_user.id, target_user.username, duration_days, event.sender_id)
+            await db.add_premium(target_user.id, target_user.username, duration_days, event.sender_id)
         except OverflowError as e:
             await event.reply("❌ Duration is too long.")
             raise StopPropagation
@@ -2705,7 +2734,7 @@ class BotHandlers:
     
     async def remove_premium_command(self, event: events.NewMessage.Event):
         """Admin command to remove a premium user."""
-        if not db.is_admin(event.sender_id):
+        if not await db.is_admin(event.sender_id):
             raise StopPropagation
 
         target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
@@ -2713,11 +2742,11 @@ class BotHandlers:
             await event.reply("ℹ️ **Usage:** `/removepremium <user_id/@username>` or reply to a user.")
             raise StopPropagation
         
-        if not db.is_premium(target_user.id):
+        if not await db.is_premium(target_user.id):
             await event.reply("🤷‍♂️ This user does not have an active premium subscription.")
             raise StopPropagation
 
-        if db.remove_premium(target_user.id, event.sender_id):
+        if await db.remove_premium(target_user.id, event.sender_id):
             full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
             await event.reply(f"✅ Premium status for **{full_name}** (`{target_user.id}`) has been revoked.")
             logger.info(f"Premium of user {target_user.id} has been revoked by admin: {event.sender_id}")
@@ -2727,7 +2756,7 @@ class BotHandlers:
 
     async def extend_premium_command(self, event: events.NewMessage.Event):
         """Admin command to extend a premium user's subscription."""
-        if not db.is_admin(event.sender_id):
+        if not await db.is_admin(event.sender_id):
             raise StopPropagation
         
         user_arg = event.pattern_match.group(1)
@@ -2742,13 +2771,13 @@ class BotHandlers:
             await event.reply("❌ User not found.")
             raise StopPropagation
 
-        if not db.is_premium(target_user.id):
+        if not await db.is_premium(target_user.id):
             await event.reply("🤷‍♂️ This user isn't premium. Use `/addpremium` to grant them premium first.")
             raise StopPropagation
         
         days_to_add = int(days_arg)
         try:
-            new_expiry = db.manage_premium_duration(target_user.id, days_to_add, event.sender_id, 'extended')
+            new_expiry = await db.manage_premium_duration(target_user.id, days_to_add, event.sender_id, 'extended')
         except OverflowError as e:
             await event.reply("❌ Duration is too long.")
             raise StopPropagation
@@ -2767,7 +2796,7 @@ class BotHandlers:
 
     async def deduct_premium_command(self, event: events.NewMessage.Event):
         """Admin command to deduct days from a premium user's subscription."""
-        if not db.is_admin(event.sender_id):
+        if not await db.is_admin(event.sender_id):
             raise StopPropagation
 
         user_arg = event.pattern_match.group(1)
@@ -2782,14 +2811,14 @@ class BotHandlers:
             await event.reply("❌ User not found.")
             raise StopPropagation
 
-        if not db.is_premium(target_user.id):
+        if not await db.is_premium(target_user.id):
             await event.reply("🤷‍♂️ This user does not have an active premium subscription.")
             raise StopPropagation
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
 
-        current_days_left= db.get_premium_duration_left(target_user.id).days
+        current_days_left= await db.get_premium_duration_left(target_user.id).days
         if int(days_arg) > current_days_left:
-            if db.remove_premium(target_user.id, event.sender_id):
+            if await db.remove_premium(target_user.id, event.sender_id):
                 await event.reply(f"✅ Since **{full_name}** had only `{current_days_left}` days of premium left, they have been **removed** from premium.")
                 logger.info(f"Premium of user {target_user.id} has been revoked by admin: {event.sender_id}")
             else:
@@ -2798,7 +2827,7 @@ class BotHandlers:
 
         days_to_deduct = -abs(int(days_arg)) # Ensure it's a negative number
         try:
-            new_expiry = db.manage_premium_duration(target_user.id, days_to_deduct, event.sender_id, 'deducted')
+            new_expiry = await db.manage_premium_duration(target_user.id, days_to_deduct, event.sender_id, 'deducted')
         except OverflowError as e:
             await event.reply("❌ Duration is too long.")
             raise StopPropagation
@@ -2817,7 +2846,7 @@ class BotHandlers:
 
     async def getstats_command(self, event: events.NewMessage.Event):
         """Admin command to get conversion stats for a specific user."""
-        if not db.is_admin(event.sender_id):
+        if not await db.is_admin(event.sender_id):
             raise StopPropagation # Only admins can use this
 
         target_user = await self._get_user_from_event(event, event.pattern_match.group(1))
@@ -2829,18 +2858,18 @@ class BotHandlers:
         role = "👤 Regular User"
         if db.is_owner(target_user.id):
             role = "👑 Owner"
-        elif db.is_admin(target_user.id):
+        elif await db.is_admin(target_user.id):
             role = "👮‍♂️ Admin"
-        elif db.is_premium(target_user.id):
+        elif await db.is_premium(target_user.id):
             role = "⭐ Premium User"
-            duration_left = db.get_premium_duration_left(target_user.id)
+            duration_left = await db.get_premium_duration_left(target_user.id)
             if duration_left:
                 days = duration_left.days
                 hours = duration_left.seconds // 3600
                 minutes = (duration_left.seconds % 3600) // 60
                 role += f"\n⏳ **Expires in**: {days}d {hours}h {minutes}m"
         
-        stats = db.get_user_stats(target_user.id)
+        stats = await db.get_user_stats(target_user.id)
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
         
         message = (
@@ -2884,7 +2913,7 @@ class BotHandlers:
     # silent ban command
     async def sban_command(self, event: events.NewMessage.Event):
         """Admin command to SILENTLY ban a user."""
-        if not db.is_admin(event.sender_id):
+        if not await db.is_admin(event.sender_id):
             raise StopPropagation
         
         target_user, reason = await self._parse_user_and_reason(event)
@@ -2893,11 +2922,11 @@ class BotHandlers:
             await event.reply("ℹ️ **Usage:** `/sban <user_id/@username> [reason]` or reply to a user.")
             raise StopPropagation
 
-        if db.is_owner(target_user.id) or db.is_admin(target_user.id):
+        if db.is_owner(target_user.id) or await db.is_admin(target_user.id):
             await event.reply("❌ Admins and Owners cannot be banned.")
             raise StopPropagation
 
-        db.ban_user(target_user.id, event.sender_id, reason, is_silent=True)
+        await db.ban_user(target_user.id, event.sender_id, reason, is_silent=True)
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
         await event.reply(f"🚫 **Silently Banned {full_name}** (`{target_user.id}`).")
         logger.info(f"User {target_user.id} silently banned by admin: {event.sender_id}. Reason: {reason}")
@@ -2906,7 +2935,7 @@ class BotHandlers:
     # notified ban command 
     async def ban_command(self, event: events.NewMessage.Event):
         """Admin command to ban a user and NOTIFY them."""
-        if not db.is_admin(event.sender_id):
+        if not await db.is_admin(event.sender_id):
             raise StopPropagation
 
         target_user, reason = await self._parse_user_and_reason(event)
@@ -2915,15 +2944,15 @@ class BotHandlers:
             await event.reply("ℹ️ **Usage:** `/ban <user_id/@username> [reason]` or reply to a user.")
             raise StopPropagation
 
-        if db.is_owner(target_user.id) or db.is_admin(target_user.id):
+        if db.is_owner(target_user.id) or await db.is_admin(target_user.id):
             await event.reply("❌ Admins and Owners cannot be banned.")
             raise StopPropagation
         
-        if db.is_banned(target_user.id):
+        if await db.is_banned(target_user.id):
             await event.reply("🤷‍♂️ This user is already banned.")
             raise StopPropagation
 
-        db.ban_user(target_user.id, event.sender_id, reason, is_silent=False)
+        await db.ban_user(target_user.id, event.sender_id, reason, is_silent=False)
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
         logger.info(f"User {target_user.id} banned by admin: {event.sender_id}. Reason: {reason}")
         
@@ -2944,7 +2973,7 @@ class BotHandlers:
     # unban command
     async def unban_command(self, event: events.NewMessage.Event):
         """Admin command to unban a user."""
-        if not db.is_admin(event.sender_id):
+        if not await db.is_admin(event.sender_id):
             raise StopPropagation
 
         target_user, reason = await self._parse_user_and_reason(event)
@@ -2953,11 +2982,11 @@ class BotHandlers:
             await event.reply("ℹ️ **Usage:** `/unban <user_id/@username> [reason]` or reply to a user.")
             raise StopPropagation
 
-        if not db.is_banned(target_user.id):
+        if not await db.is_banned(target_user.id):
             await event.reply("🤷‍♂️ This user is not currently banned.")
             raise StopPropagation
 
-        if db.unban_user(target_user.id, event.sender_id, reason):
+        if await db.unban_user(target_user.id, event.sender_id, reason):
             full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
             await event.reply(f"✅ **Unbanned {full_name}** (`{target_user.id}`). They can now use the bot again.")
             logger.info(f"User {target_user.id} unbanned by admin: {event.sender_id}. Reason: {reason}")
@@ -3007,22 +3036,27 @@ class BotHandlers:
                 log_id = int(data.split("_", 2)[2])
                 success = await queue_manager.cancel_item(user_id, log_id)
                 if success:
-                    db.update_conversion_log(log_id, "cancelled", datetime.now(timezone.utc), 0.0)
+                    await db.update_conversion_log(log_id, "cancelled", datetime.now(timezone.utc), 0.0)
                     await event.edit("✅ Your request has been successfully cancelled.")
                 else:
                     await event.edit("❌ Could not cancel. The item may be processing or completed.")
 
             elif data == "check_queue":
-                position = queue_manager.get_queue_position(user_id)
-                stats = queue_manager.get_queue_stats()
-                if position:
+                position = await queue_manager.get_queue_position(user_id)
+                stats = await queue_manager.get_queue_stats()
+                total = stats["total_waiting"] + (1 if stats["currently_processing"] else 0)
+
+                if position == -1: # user is processing
+                    message = "🚀 Your pack is currently being processed! It should be ready soon."
+                    buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
+                elif position > 0: # in queue
                     message = QUEUE_CHECK_MESSAGE.format(
                         position=position,
-                        total=stats["total_waiting"] + (1 if stats["currently_processing"] else 0)
+                        total=total
                     )
                     buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
-                else:
-                    message = f"📊 You're not in the queue. Total users waiting: {stats['total_waiting']}."
+                else: # not in the queue
+                    message = f"📊 You're not in the queue. Total in queue: {total}."
                     buttons = [
                         [Button.inline("🔄 Refresh", b"check_queue")],
                         [Button.inline("🏠 Back to Start", b"start")]
@@ -3067,28 +3101,28 @@ class BotHandlers:
             elif data.startswith("contact_send_"):
                 await event.answer()
                 *_, sid = data.split("_", 2)
-                session = await self.session_manager.get(user_id, Flow.CONTACT, sid)
+                session = await session_manager.get(user_id, Flow.CONTACT, sid)
 
                 if session and session.active:
                     # Update the session state to wait for the user's message
-                    await self.session_manager.update(user_id, Flow.CONTACT, sid, state="awaiting_contact_message", ttl_seconds=3600)
+                    await session_manager.update(user_id, Flow.CONTACT, sid, state="awaiting_contact_message", ttl_seconds=3600)
                     prompt_message = await event.edit(
                         "✅ Great! Please send the message you'd like to forward now. You can reply to this message or send a new one.", 
                         buttons=[Button.inline("❌ Cancel", f"contact_cancel_{sid}")]
                     )
                     # Link this message to the session so we can identify replies
-                    await self.session_manager.mark_message(user_id, Flow.CONTACT, sid, event.chat_id, prompt_message.id)
+                    await session_manager.mark_message(user_id, Flow.CONTACT, sid, event.chat_id, prompt_message.id)
                 else:
                     await event.edit("This action has expired. Please use /contact again.")
 
             elif data.startswith("contact_cancel_"):
                 await event.answer()
                 *_, sid = data.split("_", 2)
-                session = await self.session_manager.get(user_id, Flow.CONTACT, sid)
+                session = await session_manager.get(user_id, Flow.CONTACT, sid)
 
                 if session and session.active:
                     # Expire the session to deactivate it
-                    await self.session_manager.expire(user_id, Flow.CONTACT, sid)
+                    await session_manager.expire(user_id, Flow.CONTACT, sid)
                     await event.edit("Action cancelled.", buttons=None)
                 else:
                     await event.edit("This action has expired or already completed.")
@@ -3101,7 +3135,7 @@ class BotHandlers:
                     admin_msg_id = int(admin_msg_id_str)
 
                     # Fetch details of the original user
-                    details = db.get_contact_details(contact_id)
+                    details = await db.get_contact_details(contact_id)
                     if not details:
                         logger.error(f"Failed to get the original contact message of contact ID {contact_id}.")
                         await event.edit("❌ Error: Could not find the original contact message.")
@@ -3116,7 +3150,7 @@ class BotHandlers:
                     # Send the reply and log it
                     await self.client.send_message(original_user_id, CONTACT_ADMIN_REPLY_HEADER, parse_mode='html')
                     sent_msg = await self.client.send_message(original_user_id, admin_msg)
-                    db.log_admin_reply(contact_id, user_id, sent_msg.id, reply_content)
+                    await db.log_admin_reply(contact_id, user_id, sent_msg.id, reply_content)
                     logger.info(f"An admin replied to the already replied user {original_user_id}")
                     await event.edit("✅ Your additional reply has been sent.")
                 except Exception as e:
@@ -3128,7 +3162,7 @@ class BotHandlers:
                 *_, contact_id_str, admin_msg_id_str = data.split("_")
                 contact_id = int(contact_id_str)
                 
-                details = db.get_contact_details(contact_id)
+                details = await db.get_contact_details(contact_id)
                 if not details:
                     await event.edit("❌ Could not retrieve details for this contact.")
                     return
@@ -3176,7 +3210,7 @@ class BotHandlers:
                 await event.answer()
                 # This allows the owner to go back to the initial confirmation prompt
                 *_, contact_id_str, admin_msg_id_str = data.split("_")
-                previous_replies = db.get_previous_replies(int(contact_id_str))
+                previous_replies = await db.get_previous_replies(int(contact_id_str))
                 
                 prompt_text = f"⚠️ **This query has already been handled {len(previous_replies)} time(s).**\n\nAre you sure you want to send another reply?"
                 buttons = [
@@ -3193,7 +3227,7 @@ class BotHandlers:
                 try:
                     *_, flow_val, sid = data.split("_", 3)
                     flow = Flow(flow_val)
-                    session = await self.session_manager.get(user_id, flow, sid)
+                    session = await session_manager.get(user_id, flow, sid)
                     session_active = session and session.active
                         
                     msg = await event.get_message()
@@ -3211,7 +3245,7 @@ class BotHandlers:
                             buttons.remove(row)
                     
                     if session_active:
-                        await self.session_manager.expire(user_id, flow, sid)
+                        await session_manager.expire(user_id, flow, sid)
                         await event.answer(f"✅ Cancelled {text_to_remove}")
                         # if only clear all button is there but all actions have been already cleared individually
                         if len(buttons)==1:
@@ -3242,7 +3276,7 @@ class BotHandlers:
                     
                 cancelled_count = 0
                 for session, flow in active_sessions_with_flow:
-                    await self.session_manager.expire(user_id, flow, session.session_id)
+                    await session_manager.expire(user_id, flow, session.session_id)
                     cancelled_count += 1
                     
                 await event.edit(f"✅ Cancelled {cancelled_count} pending action(s).")
@@ -3266,7 +3300,7 @@ class BotHandlers:
                         pass
 
                 if action == "premium":
-                    users = db.get_gstats_premium_list()
+                    users = await db.get_gstats_premium_list()
                     content = ""
                     for user in users:
                         expiry = user['expiry_date'].strftime('%Y-%m-%d %H:%M')
@@ -3274,21 +3308,21 @@ class BotHandlers:
                     await self._gstats_send_list(event, "Active Premium Members", content, "premium_users.txt")
 
                 elif action == "top_users":
-                    users = db.get_gstats_top_users()
+                    users = await db.get_gstats_top_users()
                     content = ""
                     for i, user in enumerate(users, 1):
                         content += f"{i}. <code>{user['user_id']}</code> ({html.escape(user['full_name'])}) - <b>{user['total_requests']}</b> requests\n"
                     await self._gstats_send_list(event, "Top 50 Users by Requests", content, "top_users.txt")
 
                 elif action == "admins":
-                    users = db.get_gstats_admins_list()
+                    users = await db.get_gstats_admins_list()
                     content = ""
                     for user in users:
                         content += f"• <code>{user['user_id']}</code> (@{user['username'] or 'N/A'})\n"
                     await self._gstats_send_list(event, "Admins List", content, "admins.txt")
 
                 elif action == "banned":
-                    users = db.get_gstats_banned_list()
+                    users = await db.get_gstats_banned_list()
                     content = ""
                     for user in users:
                         ban_date = user['ban_date'].strftime('%Y-%m-%d')
@@ -3376,9 +3410,9 @@ class BotHandlers:
                         fwd_msg_id = getattr(message_to_send.forward, 'channel_post', None)
 
                     if action_type == 'broadcast':
-                        db.log_broadcast(user_id, message_for_db, flags_for_db, len(target_ids), success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
+                        await db.log_broadcast(user_id, message_for_db, flags_for_db, len(target_ids), success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
                     elif action_type == 'send':
-                        db.log_send(user_id, message_for_db, flags_for_db, target_ids, success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
+                        await db.log_send(user_id, message_for_db, flags_for_db, target_ids, success_count, fail_count, is_forward, fwd_chat_id, fwd_msg_id)
 
                     await event.edit(
                         f"✅ **{action_type.capitalize()} Complete!**\n\n"
@@ -3411,12 +3445,12 @@ class BotHandlers:
                     fail_list = []
 
                     for name in pack_short_names:
-                        set_id = db.get_set_id_by_short_name(name)
+                        set_id = await db.get_set_id_by_short_name(name)
                         if not set_id:
                             fail_list.append(f"• `{name}` (Not found)")
                             continue
                         
-                        position = db.remove_from_cache(set_id)
+                        position = await db.remove_from_cache(set_id)
                         if position:
                             channel_id, message_ids = position
                             try:
@@ -3454,7 +3488,7 @@ class BotHandlers:
                     return
 
                 elif action_type == "addcache_interactive":
-                    session = await self.session_manager.create(
+                    session = await session_manager.create(
                         user_id=user_id,
                         flow=Flow.ADDCACHE,
                         state='awaiting_addcache_input',
@@ -3467,7 +3501,7 @@ class BotHandlers:
                         "Send /done when you are finished.", 
                         buttons=None
                     )
-                    await self.session_manager.mark_message(user_id, Flow.ADDCACHE, session.session_id, event.chat_id, event.message_id)
+                    await session_manager.mark_message(user_id, Flow.ADDCACHE, session.session_id, event.chat_id, event.message_id)
                     return
                 
             elif data.startswith("suggest_"):
@@ -3486,7 +3520,7 @@ class BotHandlers:
                 action = parts[1]
                 sid = parts[2]
 
-                session = await self.session_manager.get(user_id, Flow.CUSTOMIZE, sid)
+                session = await session_manager.get(user_id, Flow.CUSTOMIZE, sid)
                 if not session or not session.active:
                     await event.edit("This customization session has expired. Please send the sticker again.", buttons=None)
                     return
@@ -3494,28 +3528,28 @@ class BotHandlers:
                 payload = session.payload
 
                 if action == "title":
-                    await self.session_manager.update(user_id, Flow.CUSTOMIZE, sid, state='awaiting_custom_title', ttl_seconds=3600)
+                    await session_manager.update(user_id, Flow.CUSTOMIZE, sid, state='awaiting_custom_title', ttl_seconds=3600)
                     await event.edit(
                         "Okay, send me the new **title** for your sticker pack (max 50 characters).",
                         buttons=[[Button.inline("⬅️ Back", f"customize_back_{sid}")]]
                     )
-                    await self.session_manager.mark_message(user_id, Flow.CUSTOMIZE, sid, event.chat_id, event.message_id)
+                    await session_manager.mark_message(user_id, Flow.CUSTOMIZE, sid, event.chat_id, event.message_id)
 
                 elif action == "author":
-                    await self.session_manager.update(user_id, Flow.CUSTOMIZE, sid, state='awaiting_custom_author', ttl_seconds=3600)
+                    await session_manager.update(user_id, Flow.CUSTOMIZE, sid, state='awaiting_custom_author', ttl_seconds=3600)
                     await event.edit(
                         "Sure, send me the **author name** you'd like to use (max 30 characters).",
                         buttons=[[Button.inline("⬅️ Back", f"customize_back_{sid}")]]
                     )
-                    await self.session_manager.mark_message(user_id, Flow.CUSTOMIZE, sid, event.chat_id, event.message_id)
+                    await session_manager.mark_message(user_id, Flow.CUSTOMIZE, sid, event.chat_id, event.message_id)
 
                 elif action == "back":
                     await event.answer()
-                    await self.session_manager.update(user_id, Flow.CUSTOMIZE, sid, state='awaiting_customization_choice', ttl_seconds=3600)
+                    await session_manager.update(user_id, Flow.CUSTOMIZE, sid, state='awaiting_customization_choice', ttl_seconds=3600)
                     await self._update_customization_prompt(user_id, session)
 
                 elif action == "cancel":
-                    await self.session_manager.expire(user_id, Flow.CUSTOMIZE, sid)
+                    await session_manager.expire(user_id, Flow.CUSTOMIZE, sid)
                     await event.edit("❌ Conversion cancelled.", buttons=None)
 
                 elif action == "convert":
@@ -3539,7 +3573,7 @@ class BotHandlers:
                     sticker_set_info = payload['sticker_set_info']
                     if not (payload['custom_title'] or payload['custom_author']):
                         if self.cache_enabled and await self.check_cache(original_event_info['chat_id'], original_event_info['user_id'], original_event_info['message_id'], sticker_set_info):
-                            await self.session_manager.expire(user_id, Flow.CUSTOMIZE, sid)
+                            await session_manager.expire(user_id, Flow.CUSTOMIZE, sid)
                             await event.delete()
                             return
                     
@@ -3551,5 +3585,5 @@ class BotHandlers:
                         custom_title=payload['custom_title'],
                         custom_author=payload['custom_author']
                     )
-                    await self.session_manager.expire(user_id, Flow.CUSTOMIZE, sid)
+                    await session_manager.expire(user_id, Flow.CUSTOMIZE, sid)
                     await event.delete()

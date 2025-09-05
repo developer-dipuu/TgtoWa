@@ -48,6 +48,7 @@ DOWNLOAD_TIMEOUT = 30  # seconds to wait for a sticker/emoji file to download  #
 UPLOAD_TIMEOUT = 60    # seconds to wait for a .wastickers file to upload
 MAX_CONVERSION_SECONDS_REGULAR = 300  # 5 minutes. Max estimated time for non-premium users
 DB_UPLOAD_TIMEOUT = 30
+DB_DUMP_TIMEOUT = 30
 MAX_DOWNLOAD_RETRIES = 3
 
 # ------- Database Credentials -------
@@ -62,7 +63,6 @@ DATA_DIR = "data"
 TEMP_DIR = "temp"
 OUTPUT_DIR = "output"
 LOG_DIR = "~/screenlogs" # if you have setup the logging system like screen's logging and use logrotate to manage logs (for /getlogs command)
-DB_PATH = f"{DATA_DIR}/bot_data.db" # its by default in the data directory but if you change that it should get changed automatically unless you mess it up, its needed for the /getdb command to work
 
 # ------ Cache settings ----------
 CACHE_ENABLED = True # To use cache or not, owner can change it using the bot too but on bot restarts it will change to this default value
