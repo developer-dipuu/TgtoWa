@@ -440,12 +440,9 @@ async def get_gstats() -> dict:
             (SELECT COALESCE(SUM(succeeded_requests), 0) FROM user_stats) AS total_succeeded,
             (SELECT COALESCE(SUM(failed_requests), 0) FROM user_stats) AS total_failed,
             (SELECT COALESCE(SUM(cancelled_requests), 0) FROM user_stats) AS total_cancelled,
-            (SELECT 
-                COUNT(*) FILTER (WHERE status LIKE 'completed%'),
-                COUNT(*) FILTER (WHERE status LIKE 'failed%'),
-                COUNT(*) FILTER (WHERE status LIKE 'cancelled%')
-            FROM conversion_log WHERE request_time >= $1
-            ) AS (today_succeeded, today_failed, today_cancelled)
+            (SELECT COUNT(*) FROM conversion_log WHERE request_time >= $1 AND status LIKE 'completed%%') AS today_succeeded,
+            (SELECT COUNT(*) FROM conversion_log WHERE request_time >= $1 AND status LIKE 'failed%%') AS today_failed,
+            (SELECT COUNT(*) FROM conversion_log WHERE request_time >= $1 AND status LIKE 'cancelled%%') AS today_cancelled
 
     """, today_start)
     return dict(row)

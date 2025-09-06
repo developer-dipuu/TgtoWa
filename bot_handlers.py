@@ -1604,7 +1604,7 @@ class BotHandlers:
                 f"<b>Upgrade to unlock these great features!</b>\n\n"
                 f"<b>Pricing:</b>\n"
                 f"  • 💵 <b>${PREMIUM_PRICE_MONTHLY}</b> / month\n"
-                f"  • 💰 <b>${PREMIUM_PRICE_YEARLY}</b> / year (<i>Save over 15%</i>)\n\n"
+                f"  • 💰 <b>${PREMIUM_PRICE_YEARLY}</b> / year (<i>Save over {PREMIUM_SAVINGS_PERCENT}%</i>)\n\n"
                 f"Contact an admin at <b>{SUPPORT_GROUP}</b> to get started.\n\n"
             )
         

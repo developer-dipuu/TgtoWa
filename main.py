@@ -38,7 +38,7 @@ def handle_exception(loop, context):
         # Schedule the coroutine to run safely on the loop
         asyncio.run_coroutine_threadsafe(coro, loop)
 
-async def handle_shutdown_signal(handlers: 'BotHandlers', client: 'TelegramClient'):
+async def handle_shutdown_signal(handlers: 'BotHandlers', client: 'TelegramClient'): # type: ignore
     """
     Handles the shutdown logic based on how many Ctrl+C signals are received.
     """

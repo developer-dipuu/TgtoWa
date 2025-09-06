@@ -1,6 +1,7 @@
 import html
 import os
 import json
+import math
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -140,6 +141,7 @@ BACKUPS = {
 # Premium Pricing Configuration
 PREMIUM_PRICE_MONTHLY = 0.5
 PREMIUM_PRICE_YEARLY = 5
+PREMIUM_SAVINGS_PERCENT = math.floor((1 - (PREMIUM_PRICE_YEARLY / (PREMIUM_PRICE_MONTHLY * 12))) * 100)
 
 #===================== You need not to change thses things unless you want to edit default messages ======================================
 
