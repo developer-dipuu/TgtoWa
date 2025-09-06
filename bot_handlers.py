@@ -38,6 +38,7 @@ class BotHandlers:
         Initializes the bot handlers with the Telethon client and other necessary components.
         """
         ensure_directories()
+        self.shutting_down = False
         self.client = client
         self.network_task = NetworkTask(self.client)
         self.converter = StickerConverter(self.client)
@@ -1397,7 +1398,7 @@ class BotHandlers:
     async def process_queue(self):
         """Process the conversion queue."""
         async with self.processing_lock:
-            while True:
+            while True and not self.shutting_down:
                 item = await queue_manager.get_next_item()
                 if not item:
                     break

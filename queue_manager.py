@@ -266,5 +266,29 @@ class QueueManager:
         return deleted_count
 
 
+    async def requeue_stale_items(self) -> int:
+        """
+        Finds any items stuck in 'processing' (e.g. from a crash or forced shutdown)
+        and resets them to 'waiting' to be picked up again.
+        We give them a slightly elevated priority to get them done first.
+        """
+        stale_items = await self.pool.fetch(
+            """
+            UPDATE queue
+            SET status = 'waiting',
+                priority = priority - 1,
+                processing_started_at = NULL
+            WHERE status = 'processing'
+            RETURNING id, user_id
+            """
+        )
+
+        count = len(stale_items)
+        if count > 0:
+            user_ids = [item['user_id'] for item in stale_items]
+            logger.warning(
+                f"Found and re-queued {count} stale item(s) from a previous session for users: {user_ids}."
+            )
+        return count
 # Global queue manager instance
 queue_manager = QueueManager()
