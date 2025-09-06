@@ -1601,7 +1601,11 @@ class BotHandlers:
         else:
             status_message = (
                 f"❌ <b>You are not currently a Premium user.</b>\n\n"
-                f"Contact an admin at <b>{SUPPORT_GROUP}</b> to upgrade and unlock these great features!\n\n"
+                f"<b>Upgrade to unlock these great features!</b>\n\n"
+                f"<b>Pricing:</b>\n"
+                f"  • 💵 <b>${PREMIUM_PRICE_MONTHLY}</b> / month\n"
+                f"  • 💰 <b>${PREMIUM_PRICE_YEARLY}</b> / year (<i>Save over 15%</i>)\n\n"
+                f"Contact an admin at <b>{SUPPORT_GROUP}</b> to get started.\n\n"
             )
         
         return status_message + benefits_message

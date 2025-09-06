@@ -135,7 +135,11 @@ BACKUPS = {
         "enabled": True, # Toggle for log file backups
     }
 }
+# ========== Others ============
 
+# Premium Pricing Configuration
+PREMIUM_PRICE_MONTHLY = 0.5
+PREMIUM_PRICE_YEARLY = 5
 
 #===================== You need not to change thses things unless you want to edit default messages ======================================
 
