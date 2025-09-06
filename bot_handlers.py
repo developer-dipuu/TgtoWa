@@ -370,7 +370,7 @@ class BotHandlers:
 
         return status
     
-    async def delete_messages(self, chat_id: int, msg_id: int | Sequence[int], custom_error_log: str | None = None):
+    async def delete_message(self, chat_id: int, msg_id: int | Sequence[int], custom_error_log: str | None = None):
         """Deletes messages from a chat. Accepts a single message ID or list of message IDs. Returns success."""
         def log_error(base_msg: str):
             full_msg = f"{custom_error_log} Error: {base_msg}" if custom_error_log else base_msg
@@ -610,18 +610,17 @@ class BotHandlers:
     async def _prompt_for_ambiguous_input(self, event: events.NewMessage.Event, sessions_with_flow: List[tuple[Session, Flow]]):
         """Notifies the user that their input is ambiguous and provides option to cancel."""
 
-        msg_to_del = [event.message.id]
+        all_ids_to_delete = {event.message.id}
+        for session, _ in sessions_with_flow:
+            old_prompt_ids = session.payload.get('ambiguity_prompt_ids', [])
+            all_ids_to_delete.update(old_prompt_ids)
 
-        # All sessions share the same ambiguity prompt, so we only need to check the first one.
-        first_session, _ = sessions_with_flow[0]
-        old_prompt_id = first_session.payload.get('ambiguity_prompt_id')
-        if old_prompt_id: msg_to_del .append(old_prompt_id)
-
-        asyncio.create_task(self.delete_messages(
-            event.chat_id,
-            msg_to_del,
-            custom_error_log="Failed to delete old ambiguity prompt."
-        ))
+        if all_ids_to_delete:
+            asyncio.create_task(self.delete_multiple_messages(
+                event.chat_id,
+                list(all_ids_to_delete),
+                custom_error_log="Failed to delete old ambiguity prompts."
+            ))
 
         text = (
             "🤔 **Multiple Actions Pending**\n\n"
@@ -658,12 +657,16 @@ class BotHandlers:
         prompt_id = prompt_msg.id
         
         # Tag all the ambiguous sessions with the ID of the prompt we just sent
+        # Why we are appending to the list instead of overriding as we have fired of delete tasks of old prompt ids?
+        # because the messages are sent async so by the time next prompt arrive the old one might haven't been sent yet 
+        # so appending make atleat the process_session_input (or when user sends ambiguous input slowly) delete all old prompts
+        # otherwise it would have only deleted the last completed message but since async, multiple maybe sent if user inputs too fast
         for session, flow in sessions_with_flow:
             await session_manager.update(
                 event.sender_id,
                 flow,
                 session.session_id,
-                payload_mutator=lambda p: p.update({'ambiguity_prompt_id': prompt_id})
+                payload_mutator=lambda p, pid=prompt_id: p.setdefault('ambiguity_prompt_ids', []).append(pid)
             )
 
         raise StopPropagation
@@ -672,20 +675,20 @@ class BotHandlers:
         """Routes a user's text message to the correct logic based on the session."""
         user_id = event.sender_id
 
-        prompt_id_to_delete = session.payload.get('ambiguity_prompt_id')
+        prompt_ids_to_delete = session.payload.get('ambiguity_prompt_ids')
 
-        if prompt_id_to_delete:
-            asyncio.create_task(self.delete_messages(event.chat_id, prompt_id_to_delete, "Failed to delete ambagious prompt."))
+        if prompt_ids_to_delete:
+            asyncio.create_task(self.delete_multiple_messages(event.chat_id, prompt_ids_to_delete, "Failed to delete ambagious prompt."))
             
-            # Clean the ambiguity_prompt_id from all active sessions for this user
+            # Clean the ambiguity_prompt_ids from all active sessions for this user
             all_active = await self._get_active_input_sessions(user_id)
             for active_session, active_flow in all_active:
-                if 'ambiguity_prompt_id' in active_session.payload:
+                if 'ambiguity_prompt_ids' in active_session.payload:
                     await session_manager.update(
                         user_id,
                         active_flow,
                         active_session.session_id,
-                        payload_mutator=lambda p: p.pop('ambiguity_prompt_id', None)
+                        payload_mutator=lambda p: p.pop('ambiguity_prompt_ids', None)
                     )
 
         # --- CONTACT MESSAGE ---
@@ -730,8 +733,8 @@ class BotHandlers:
             if not event.text or not event.text.strip():
                 await event.delete()
                 msg = await event.respond("⚠️ Only valid **text messages** are allowed. Please try again.")
-                payload['failed_inputs'].append(msg.id)
-                await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, payload_mutator=lambda p: p.update(payload))
+                await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id,
+                                                 payload_mutator=lambda p: p.setdefault('failed_inputs', []).append(msg.id))
                 return
 
             user_input = event.text.strip()
@@ -740,8 +743,8 @@ class BotHandlers:
                 if len(user_input) > 50:
                     await event.delete()
                     msg = await event.respond("⚠️ Title too long (max 50 chars). Please try again.")
-                    payload['failed_inputs'].append(msg.id)
-                    await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, payload_mutator=lambda p: p.update(payload))
+                    await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, 
+                                                 payload_mutator=lambda p: p.setdefault('failed_inputs', []).append(msg.id))
                     return
                 payload['custom_title'] = user_input
 
@@ -749,12 +752,12 @@ class BotHandlers:
                 if len(user_input) > 30:
                     await event.delete()
                     msg = await event.respond("⚠️ Author too long (max 30 chars). Please try again.")
-                    payload['failed_inputs'].append(msg.id)
-                    await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, payload_mutator=lambda p: p.update(payload))
+                    await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, 
+                                                 payload_mutator=lambda p: p.setdefault('failed_inputs', []).append(msg.id))
                     return
                 payload['custom_author'] = user_input
 
-            await self.react(event, emoji= "🆒", big=True)
+            await asyncio.create_task(self.react(event, emoji= "🆒", big=True))
             messages_to_delete = payload.get("failed_inputs", [])
             payload['failed_inputs'] = []
 
@@ -1309,7 +1312,7 @@ class BotHandlers:
                     if not all_uploads_succeeded and cached_messages:
                         cached_message_ids = [message.id for message in cached_messages]
                         custom_log_msg = "Failed to delete incompletely uploaded pack."
-                        asyncio.create_task(self.delete_messages(target_cache_channel, cached_message_ids, custom_log_msg))
+                        asyncio.create_task(self.delete_multiple_messages(target_cache_channel, cached_message_ids, custom_log_msg))
 
                 # ----- now send from cache (if not a system task) --------
                 if not is_silent_mode and all_uploads_succeeded:
