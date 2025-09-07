@@ -13,7 +13,7 @@ import html
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events, Button
 from telethon.errors import UserIsBlockedError, ChatAdminRequiredError
-from telethon.errors.rpcerrorlist import UserNotParticipantError
+from telethon.errors.rpcerrorlist import UserNotParticipantError, MessageDeleteForbiddenError
 from telethon.events import StopPropagation
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.functions.messages import SendReactionRequest, GetCustomEmojiDocumentsRequest
@@ -111,6 +111,9 @@ class BotHandlers:
         self.client.add_event_handler(self.addcache_command, events.NewMessage(pattern=r'/addcache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.canceladdcache_command, events.NewMessage(pattern=r'/canceladdcache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.done_command, events.NewMessage(pattern=r'/done', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.getjunk_command, events.NewMessage(pattern='/getjunk', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.clearjunk_command, events.NewMessage(pattern='/clearjunk', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+
         # Premium commands (admin use)
         self.client.add_event_handler(self.add_premium_command, events.NewMessage(pattern=r'/addpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.remove_premium_command, events.NewMessage(pattern=r'/removepremium(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
@@ -327,58 +330,59 @@ class BotHandlers:
             self.cache_full_notified = True
         return None
     
-    async def delete_cache(self, set_id):
+    async def delete_cache(self, set_id) -> bool | None:
+        """
+        Attempts to remove a pack from the cache.
+        If TG deletion fails (e.g., msg > 48h old), it logs the files as junk.
+        Returns:
+            - True: Successful deletion from DB and TG.
+            - False: Deletion failed from TG, files logged as junk.
+            - None: Pack was not found in the cache DB.
+        """
         position = await db.remove_from_cache(set_id) 
         if position:
             channel_id, message_ids = position
             try:
                 await self.client.delete_messages(channel_id, message_ids)
+            except MessageDeleteForbiddenError as e:
+                logger.warning(f"Could not delete messages for set {set_id}. They are > 48h old. Logging as junk.")
+                await db.revert_cache_removal_and_log_junk(channel_id, message_ids, set_id, "messages are > 48h old")
+                return False
             except ChatAdminRequiredError as e:
-                logger.error(f"Can't delete cache messages {message_ids}! Insufficient permissions in the channel {channel_id}!")
+                logger.error(f"Could not delete cache messages for set {set_id}. Insufficient permissions in the channel {channel_id}!")
+                await db.revert_cache_removal_and_log_junk(channel_id, message_ids, set_id, "insufficient permissions")
                 asyncio.create_task(self.notification_manager.send_cache_delete_failure(channel_id, message_ids, e))
                 return False
             except Exception as e:
-                logger.error(f"Could not delete cache messages {message_ids} in the channel {channel_id}. An error has occured: {e}")
+                logger.error(f"Could not delete cache messages for set {set_id}. Error: {e}")
+                await db.revert_cache_removal_and_log_junk(channel_id, message_ids, set_id, str(e))
                 asyncio.create_task(self.notification_manager.send_cache_delete_failure(channel_id, message_ids, e))
                 return False
         else:
             return None
         return True
     
-    async def delete_multiple_cache(self, set_ids):
-        messages_to_delete = {} # {channel1: [msg4,msg5,msg6], channel2: [msg10,msg11,msg12] }
+    async def delete_multiple_cache(self, set_ids: List[int]) -> dict:
+        """
+        Deletes multiple packs from cache by iterating over them.
+        Returns a dictionary with counts of success/failure.
+        """
+        if not set_ids:
+            return {"succeeded": 0, "failed": 0, "not_found": 0}
+
+        results = {"succeeded": 0, "failed": 0, "not_found": 0}
 
         for set_id in set_ids:
-            position = await db.remove_from_cache(set_id)
-            if position:
-                channel_id, message_ids = position
-                messages_to_delete.setdefault(channel_id, []).extend(message_ids)
+            status = await self.delete_cache(set_id)
+            if status is True:
+                results["succeeded"] += 1
+            elif status is False:
+                results["failed"] += 1
+            else: # None
+                results["not_found"] += 1
+            await asyncio.sleep(0.5) # to be nice to Telegram API
 
-        if not messages_to_delete:
-            return None
-        
-        status = True
-        while messages_to_delete:
-            channel = list(messages_to_delete.keys())[0] # first key
-            message_chunk = messages_to_delete.get(channel)[0:100] # collect upto 100 messages for a single channel
-            messages_to_delete[channel] = messages_to_delete.get(channel)[100:] # removed the collected messages
-
-            if not messages_to_delete.get(channel): # if all messages are collected for that cahnnel remove it from the dic
-                messages_to_delete.pop(channel)
-
-            try:
-                await self.client.delete_messages(channel, message_chunk)
-            except ChatAdminRequiredError as e:
-                logger.error(f"Can't delete cache messages {message_chunk}! Insufficient permissions in the channel {channel}!")
-                asyncio.create_task(self.notification_manager.send_cache_delete_failure(channel, message_chunk, e))
-                status = False
-            except Exception as e:
-                logger.error(f"Could not delete cache messages {message_chunk} in the channel {channel}.Error: {e}")
-                asyncio.create_task(self.notification_manager.send_cache_delete_failure(channel, message_chunk, e))
-                status = False
-            await asyncio.sleep(1)
-
-        return status
+        return results
     
     async def delete_message(self, chat_id: int, msg_id: int | Sequence[int], custom_error_log: str | None = None):
         """Deletes messages from a chat. Accepts a single message ID or list of message IDs. Returns success."""
@@ -2319,7 +2323,11 @@ class BotHandlers:
                 return
             
             action_type = "clearcache_all"
-            confirm_message = f"🗑️ Are you sure you want to clear the **entire cache**? This will remove **{len(all_packs)}** packs and cannot be undone."
+            confirm_message = (
+                f"🗑️ Are you sure you want to clear the **entire cache**? "
+                f"This will remove **{len(all_packs)}** packs, cannot be undone, "
+                f"and may take some time to complete."
+            )
             action_payload = {"packs_to_clear": set(all_packs)}
 
         else: # It's a list of links
@@ -2716,6 +2724,63 @@ class BotHandlers:
             is_processing = queue_stats["currently_processing"]
             if not is_processing:
                 asyncio.create_task(self.process_queue())
+
+    async def getjunk_command(self, event: events.NewMessage.Event):
+        """Owner command to get a list of all junk files."""
+        junk_records = await db.get_all_junk_files_grouped()
+        
+        if not junk_records:
+            await event.reply("✅ No junk files found in the database. All clear!")
+            return
+
+        junk_data = {str(record['channel_id']): record['message_ids'] for record in junk_records}
+        total_files = sum(len(ids) for ids in junk_data.values())
+
+        try:
+            file_path = os.path.join(TEMP_DIR, "junk_files.json")
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(junk_data, f, indent=4)
+
+            await event.reply(
+                f"📄 Found a total of **{total_files}** junk files across **{len(junk_data)}** channels.\n\n"
+                "The list has been sent as a JSON file. Use this to manually delete them with a userbot.",
+                file=file_path
+            )
+        except Exception as e:
+            logger.error(f"Failed to send junk files list as a JSON file. Error: {e}")
+            await event.reply(f"**An error has occurred:**\n\n```{e}```")
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        raise StopPropagation
+
+    async def clearjunk_command(self, event: events.NewMessage.Event):
+        """Owner command to clear all junk file entries from the database."""
+        # We need to get the count for the confirmation message
+        all_junk = await db.get_all_junk_files_grouped()
+        if not all_junk:
+            await event.reply("✅ The junk file log is already empty. Nothing to do!")
+            return
+
+        total_files = sum(len(record['message_ids']) for record in all_junk)
+
+        action_id = os.urandom(8).hex()
+        self.pending_actions[action_id] = {"action_type": "clearjunk"}
+
+        buttons = [
+            [Button.inline("✅ Yes, Clear DB Entries", data=f"confirm_action_{action_id}")],
+            [Button.inline("❌ Cancel", data=f"cancel_action_{action_id}")]
+        ]
+
+        await event.reply(
+            f"🗑️ **Confirm Junk Log Deletion**\n\n"
+            f"This will remove **{total_files}** file records from the `junk_files` table. "
+            "This action **DOES NOT** delete the files from Telegram.\n\n"
+            "**Only proceed if you have already manually deleted these files.** This action cannot be undone.",
+            buttons=buttons
+        )
+        raise StopPropagation
+
 
     # ------------- Admins commands ---------------
 
@@ -3480,50 +3545,45 @@ class BotHandlers:
                     packs_to_clear = pending_action['payload']['packs_to_clear']
                     await event.edit(f"🗑️ Deleting all {len(packs_to_clear)} cached packs from Telegram channels...")
                     
-                    success = await self.delete_multiple_cache(packs_to_clear)
-                    if success:
-                        logger.info(f"Cache Cleared! Successfully deleted {len(packs_to_clear)} packs from cache channels.")
-                        await event.edit(f"✅ **Cache Cleared!**\nSuccessfully deleted **{len(packs_to_clear)}** packs from cache channels.")
-                    if success is False:
-                        logger.error(f"Failed to delete cached packs from cache channels.")
-                        await event.edit(f"❌ **Failed to Clear Cache!**\nDeletion of some cached packs from the cached channels failed.")
-                    if success is None:
-                        logger.warning(f"Cache is empty, still got a request seems something slipped off.")
-                        await event.edit(f"**Nothing to clear**\nSeems there is nothing to clear in cache. But technically you shouldn't have reached here. 🤔")
+                    results = await self.delete_multiple_cache(packs_to_clear)
+                    logger.info(f"Cache Cleared! Succeeded: {results['succeeded']}, Failed/Junked: {results['failed']}, Not Found: {results['not_found']}.")
+                    await event.edit(
+                        f"✅ **Cache Clear Operation Complete!**\n\n"
+                        f"• Successfully deleted: `{results['succeeded']}`\n"
+                        f"• Failed (logged as junk): `{results['failed']}`\n"
+                        f"• Not found in DB: `{results['not_found']}`"
+                    )
                     return
 
                 elif action_type == 'clearcache_packs':
                     pack_short_names = pending_action['payload']['pack_short_names']
                     await event.edit(f"Processing {len(pack_short_names)} packs to clear from cache...")
 
-                    success_list = []
-                    fail_list = []
+                    success_list, fail_list, not_found_list = [], [], []
 
                     for name in pack_short_names:
                         set_id = await db.get_set_id_by_short_name(name)
                         if not set_id:
-                            fail_list.append(f"• `{name}` (Not found)")
+                            not_found_list.append(f"• `{name}` (Not in stats DB)")
                             continue
                         
-                        position = await db.remove_from_cache(set_id)
-                        if position:
-                            channel_id, message_ids = position
-                            try:
-                                await self.client.delete_messages(channel_id, message_ids)
-                                success_list.append(f"• `{name}`")
-                                await asyncio.sleep(0.5) # Rate limit buffer
-                            except Exception as e:
-                                logger.error(f"Failed to delete messages for pack {name} set ID {set_id} from channel {channel_id}: {e}")
-                                fail_list.append(f"• `{name}` (Deletion failed)")
-                        else:
-                            fail_list.append(f"• `{name}` (Not in cache)")
+                        result = await self.delete_cache(set_id)
+                        if result is True:
+                            success_list.append(f"• `{name}`")
+                        elif result is False:
+                            fail_list.append(f"• `{name}`")
+                        else: # None
+                            not_found_list.append(f"• `{name}` (Not in cache DB)")
+
                     
-                    logger.info(f"Cache clear complete! Successfully Cleared: {len(success_list)} Failed/Not Found: {len(fail_list)}")
+                    logger.info(f"Cache clear complete! Succeeded: {len(success_list)}, Failed/Junked: {len(fail_list)}, Not Found: {len(not_found_list)}")
                     response_message = "✅ **Cache Clearing Complete!**\n\n"
                     if success_list:
                         response_message += f"**Successfully Cleared:**\n" + "\n".join(success_list) + "\n\n"
                     if fail_list:
-                        response_message += f"**Failed / Not Found:**\n" + "\n".join(fail_list)
+                        response_message += f"**Failed (Logged as Junk):**\n" + "\n".join(fail_list) + "\n\n"
+                    if not_found_list:
+                        response_message += f"**Not Found:**\n" + "\n".join(not_found_list)
                     
                     await event.edit(response_message)
                     return
@@ -3557,6 +3617,12 @@ class BotHandlers:
                         buttons=None
                     )
                     await session_manager.mark_message(user_id, Flow.ADDCACHE, session.session_id, event.chat_id, event.message_id)
+                    return
+                
+                elif action_type == 'clearjunk':
+                    await event.edit("🗑️ Clearing junk file entries from the database...")
+                    cleared_count = await db.clear_junk_file_entries()
+                    await event.edit(f"✅ Successfully cleared **{cleared_count}** junk file entries from the database.")
                     return
                 
             elif data.startswith("suggest_"):

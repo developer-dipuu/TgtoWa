@@ -259,6 +259,19 @@ async def init_db():
                     )
                 """)
 
+                # For tracking messages that failed to be deleted from cache (e.g. > 48h old)
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS junk_files (
+                        junk_id SERIAL PRIMARY KEY,
+                        channel_id BIGINT NOT NULL,
+                        message_id BIGINT NOT NULL,
+                        set_id BIGINT,
+                        reason TEXT,
+                        logged_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                        UNIQUE (channel_id, message_id)
+                    )
+                """)
+
                 # For tracking file counts in our cache channels
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS cache_channels (
@@ -367,6 +380,10 @@ async def init_db():
                 await conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_queue_set_id ON queue (set_id) WHERE status IN ('waiting', 'processing')
                 """) 
+                # Index for grouping junk files by channel
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_junk_files_channel_id ON junk_files (channel_id)
+                """)
 
         logger.info("Database initialized successfully.")
     except (asyncpg.PostgresError, Exception) as e:
@@ -1136,6 +1153,49 @@ async def get_cache_info() -> Tuple[int, Optional[asyncpg.Record]]:
             lowest_item = await conn.fetchrow("SELECT * FROM cached_packs ORDER BY cache_score ASC LIMIT 1")
             
     return count, lowest_item
+
+
+async def revert_cache_removal_and_log_junk(channel_id: int, message_ids: List[int], set_id: int, reason: str):
+    """
+    Corrects the file count after a failed deletion and logs the messages as junk.
+    This is the reversal for the optimistic decrement in remove_from_cache.
+    """
+    async with _pool.acquire() as conn, conn.transaction():
+        # Reincrement the file count because the files still exist
+        await conn.execute(
+            "UPDATE cache_channels SET file_count = file_count + $1 WHERE channel_id = $2",
+            len(message_ids), channel_id
+        )
+
+        # Log the junk files for manual cleanup
+        now = utcnow()
+        records_to_insert = [
+            (channel_id, msg_id, set_id, reason, now) for msg_id in message_ids
+        ]
+        await conn.executemany("""
+            INSERT INTO junk_files (channel_id, message_id, set_id, reason, logged_at)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (channel_id, message_id) DO NOTHING
+        """, records_to_insert)
+    logger.warning(f"Logged {len(message_ids)} junk files for set {set_id} in channel {channel_id}.")
+
+
+async def get_all_junk_files_grouped() -> List[asyncpg.Record]:
+    """Retrieves all junk files, grouped by their channel ID."""
+    return await _pool.fetch("""
+        SELECT channel_id, array_agg(message_id ORDER BY message_id ASC) as message_ids
+        FROM junk_files
+        GROUP BY channel_id
+        ORDER BY channel_id
+    """)
+
+async def clear_junk_file_entries() -> int:
+    """
+    Removes all entries from the junk_files table and returns the count of removed entries.
+    This should be called after manual deletion of the files.
+    """
+    deleted_rows = await _pool.fetch("DELETE FROM junk_files RETURNING 1")
+    return len(deleted_rows)
 
 async def calculate_and_store_popular_packs():
     """
