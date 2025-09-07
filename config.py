@@ -116,7 +116,7 @@ NOTIFICATIONS = {
     },
     # For when the bot fails to delete files from a cache channel.
     "cache_delete_failure": {
-        "enabled": True,
+        "enabled": False,
         "mention_admins": False,
     },
     # For any other message deletion failures. Can be messsy so disabled by default.(change if you care for everything)
