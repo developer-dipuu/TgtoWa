@@ -51,6 +51,7 @@ MAX_CONVERSION_SECONDS_REGULAR = 300  # 5 minutes. Max estimated time for non-pr
 DB_UPLOAD_TIMEOUT = 30
 DB_DUMP_TIMEOUT = 30
 MAX_DOWNLOAD_RETRIES = 3
+MAX_UPLOAD_RETRIES = 2
 
 # ------- Database Credentials -------
 DB_NAME = os.getenv("DB_NAME")

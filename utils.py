@@ -21,7 +21,7 @@ import io
 import emoji
 import regex
 
-from config import (DOWNLOAD_TIMEOUT, UPLOAD_TIMEOUT, DB_UPLOAD_TIMEOUT, DB_DUMP_TIMEOUT, MAX_DOWNLOAD_RETRIES, OWNER_ID, 
+from config import (DOWNLOAD_TIMEOUT, UPLOAD_TIMEOUT, DB_UPLOAD_TIMEOUT, DB_DUMP_TIMEOUT, MAX_DOWNLOAD_RETRIES, MAX_UPLOAD_RETRIES, OWNER_ID, 
                     BACKUP_ENABLED, BACKUPS, BACKUP_GROUP_ID, LOG_DIR, TEMP_DIR, DB_USER, DB_HOST, DB_PORT, DB_NAME, DB_PASSWORD)
 
 logger = logging.getLogger(__name__)
@@ -140,11 +140,20 @@ class NetworkTask:
         Worker task that uploads a file's bytes with a dedicated timeout and returns a handle.
         """
         try:
-            # upload temporarily with timeout
-            return await asyncio.wait_for(
-                self.client.upload_file(file_path),
-                timeout=timeout
-            )
+            for attempt in range(MAX_UPLOAD_RETRIES):
+                try:
+                    # upload temporarily with timeout
+                    return await asyncio.wait_for(
+                        self.client.upload_file(file_path),
+                        timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Upload of {file_path} timed out on attempt {attempt + 1}/{MAX_UPLOAD_RETRIES}.")
+                    if attempt == MAX_UPLOAD_RETRIES -1:
+                        raise
+                    wait_time = 2 * (attempt + 1)
+                    await asyncio.sleep(wait_time)
+                    pass
         except asyncio.TimeoutError:
             # raise our detailed one
             raise FileUploadTimeoutError(
@@ -153,7 +162,7 @@ class NetworkTask:
                 file_path=file_path
             )
         except Exception as e:
-            # our detailed one again haha
+            # our detailed one again :)
             raise FileUploadWrapperError(
                 f"Error during the initial upload phase of {file_path}: {e}",
                 index=index,
