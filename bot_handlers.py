@@ -941,6 +941,9 @@ class BotHandlers:
         # Log the request to the database
         log_id = await db.log_conversion_request(user.id, set_id, pack_url, is_emoji_pack)
 
+        # NEW: Increment daily usage counter before adding to queue
+        await db.increment_daily_requests(user.id)
+
         # send adding to queue message
         placeholder_message = await self.client.send_message(entity=event_info['chat_id'], message="⌛ Adding to the queue...", reply_to=event_info['message_id'])
 
@@ -1055,6 +1058,25 @@ class BotHandlers:
             return
 
         is_premium = await db.is_premium(user.id)
+
+        # Daily conversion limit check
+        daily_limit = DAILY_LIMIT_PREMIUM if is_premium else DAILY_LIMIT_REGULAR
+        if daily_limit > 0: # A limit of 0 or less means unlimited.
+            current_daily_usage = await db.get_daily_usage(user.id)
+            if current_daily_usage >= daily_limit:
+                message = (
+                    f"🚫 **Daily Limit Reached!**\n\n"
+                    f"You have used your quota of **{current_daily_usage}/{daily_limit}** conversions for today. "
+                    "Your limit will reset at midnight (UTC)."
+                )
+                buttons = None
+                if not is_premium:
+                    message += f"\n\nConsider upgrading to /premium for higher limits! Plans start from just **${PREMIUM_PRICE_MONTHLY}**/month."
+                    buttons = [[Button.inline("💎 Learn about Premium", b"premium")]]
+                
+                await event.reply(message, buttons=buttons)
+                return
+        
         limit = MAX_CONCURRENT_PREMIUM_REQUESTS if is_premium else MAX_CONCURRENT_REGULAR_REQUESTS
 
         # max queue limit
@@ -1544,6 +1566,7 @@ class BotHandlers:
     async def mystats_command(self, event: events.NewMessage.Event):
         """Displays the user's current status and conversion stats."""
         user = await event.get_sender()
+        is_premium = await db.is_premium(user.id)
         
         # user role
         role = "👤 Regular User"
@@ -1551,7 +1574,7 @@ class BotHandlers:
             role = "👑 Owner"
         elif await db.is_admin(user.id):
             role = "👮‍♂️ Admin"
-        elif await db.is_premium(user.id):
+        elif is_premium:
             role = "⭐ Premium User"
             duration_left = await db.get_premium_duration_left(user.id)
             if duration_left:
@@ -1562,10 +1585,14 @@ class BotHandlers:
             
         # get conversion stats
         stats = await db.get_user_stats(user.id)
+        daily_usage = await db.get_daily_usage(user.id)
+        daily_limit = DAILY_LIMIT_PREMIUM if is_premium else DAILY_LIMIT_REGULAR
+        limit_str = f"{daily_usage}/{daily_limit}" if daily_limit > 0 else "Unlimited"
         
         message = (
             f"📊 **Your Stats**\n\n"
-            f"**Status**: {role}\n\n"
+            f"**Status**: {role}\n"
+            f"**Today's Usage**: `{limit_str}`\n\n"
             f"**Conversions Log**:\n"
             f"  • Total Requests: `{stats['total']}`\n"
             f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
@@ -1583,6 +1610,7 @@ class BotHandlers:
         benefits_message = (
             f"<b>Premium Benefits Include:</b>\n"
             f"  • 🚀 <b>Priority Queue:</b> Your requests jump to the front of the line.\n"
+            f"  • 📈 <b>Higher Daily Limit:</b> Convert up to <b>{DAILY_LIMIT_PREMIUM}</b> packs per day (vs. {DAILY_LIMIT_REGULAR} for regular users).\n"
             f"  • ⚙️ <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.\n"
             f"  • ✍️ <b>Custom Pack Details:</b> Set your own custom title and author name for your packs.\n"
             f"  • 💬 <b>Priority Support:</b> Get faster help in the support group."
@@ -2862,13 +2890,15 @@ class BotHandlers:
             await event.reply("ℹ️ **Usage:** `/getstats <user_id/@username>` or reply to a user's message.")
             raise StopPropagation
         
+        is_premium = await db.is_premium(target_user.id)
+
         # Get user role for display
         role = "👤 Regular User"
         if db.is_owner(target_user.id):
             role = "👑 Owner"
         elif await db.is_admin(target_user.id):
             role = "👮‍♂️ Admin"
-        elif await db.is_premium(target_user.id):
+        elif is_premium:
             role = "⭐ Premium User"
             duration_left = await db.get_premium_duration_left(target_user.id)
             if duration_left:
@@ -2879,10 +2909,14 @@ class BotHandlers:
         
         stats = await db.get_user_stats(target_user.id)
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+        daily_usage = await db.get_daily_usage(target_user.id)
+        daily_limit = DAILY_LIMIT_PREMIUM if is_premium else DAILY_LIMIT_REGULAR
+        limit_str = f"{daily_usage}/{daily_limit}" if daily_limit > 0 else "Unlimited"
         
         message = (
             f"📊 **Stats for {full_name}** (`{target_user.id}`)\n\n"
-            f"**Status**: {role}\n\n"
+            f"**Status**: {role}\n"
+            f"**Today's Usage**: `{limit_str}`\n\n"
             f"**Conversions Log**:\n"
             f"  • Total Requests: `{stats['total']}`\n"
             f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
@@ -3045,6 +3079,7 @@ class BotHandlers:
                 success = await queue_manager.cancel_item(user_id, log_id)
                 if success:
                     await db.update_conversion_log(log_id, "cancelled", datetime.now(timezone.utc), 0.0)
+                    await db.decrement_daily_requests(user_id)
                     await event.edit("✅ Your request has been successfully cancelled.")
                 else:
                     await event.edit("❌ Could not cancel. The item may be processing or completed.")

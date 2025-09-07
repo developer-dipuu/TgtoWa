@@ -74,6 +74,8 @@ async def init_db():
                         succeeded_requests INTEGER DEFAULT 0,
                         failed_requests INTEGER DEFAULT 0,
                         cancelled_requests INTEGER DEFAULT 0,
+                        daily_requests INTEGER DEFAULT 0,
+                        last_request_date DATE,
                         FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
                     )
                 """)
@@ -410,6 +412,49 @@ async def get_user_stats(user_id: int) -> dict:
             "cancelled": row["cancelled_requests"] or 0,
         }
     return {"total": 0, "succeeded": 0, "failed": 0, "cancelled": 0}
+
+async def get_daily_usage(user_id: int) -> int:
+    """
+    Gets the number of requests a user has made today.
+    Returns 0 if the last request was on a previous day.
+    """
+    row = await _pool.fetchrow(
+        "SELECT daily_requests, last_request_date FROM user_stats WHERE user_id = $1", user_id
+    )
+    if row and row['last_request_date']:
+        today = utcnow().date()
+        if row['last_request_date'] == today:
+            return row['daily_requests'] or 0
+    return 0
+
+async def increment_daily_requests(user_id: int):
+    """
+    Increments the daily request counter for a user.
+    If the last request was not today, it resets the counter to 1.
+    """
+    today = utcnow().date()
+    await _pool.execute("""
+        UPDATE user_stats
+        SET
+            daily_requests = CASE
+                WHEN last_request_date = $2 THEN daily_requests + 1
+                ELSE 1
+            END,
+            last_request_date = $2
+        WHERE user_id = $1
+    """, user_id, today)
+
+async def decrement_daily_requests(user_id: int):
+    """
+    Decrements the daily request counter for a user, e.g., after a cancellation.
+    Only decrements if the last request was today and the count is positive.
+    """
+    today = utcnow().date()
+    await _pool.execute("""
+        UPDATE user_stats
+        SET daily_requests = daily_requests - 1
+        WHERE user_id = $1 AND last_request_date = $2 AND daily_requests > 0
+    """, user_id, today)
 
 # fetching all user ids from database
 async def get_all_user_ids() -> list[int]:

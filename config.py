@@ -138,10 +138,15 @@ BACKUPS = {
 }
 # ========== Others ============
 
-# Premium Pricing Configuration
+# ----- Premium Pricing Configuration ------
 PREMIUM_PRICE_MONTHLY = 0.5
 PREMIUM_PRICE_YEARLY = 5
 PREMIUM_SAVINGS_PERCENT = math.floor((1 - (PREMIUM_PRICE_YEARLY / (PREMIUM_PRICE_MONTHLY * 12))) * 100)
+
+# ------ Daily Conversion Limits ------
+# Set to 0 or a negative number for unlimited conversions.
+DAILY_LIMIT_REGULAR = 10
+DAILY_LIMIT_PREMIUM = 100
 
 #===================== You need not to change thses things unless you want to edit default messages ======================================
 
