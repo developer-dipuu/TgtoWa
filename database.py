@@ -946,7 +946,7 @@ async def get_or_create_cache_channel() -> Optional[int]:
                 return channel_id
         
     # If we get here, all configured channels are full
-    logger.critical("All available cache channels are full!")
+    logger.warning("⚠️ All available cache channels are full! ⚠️")
     return None
 
 async def update_cache_channel_file_count(channel_id: int, file_delta: int):

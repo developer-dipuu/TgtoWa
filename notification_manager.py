@@ -103,3 +103,15 @@ class NotificationManager:
             f"<b>Error:</b>\n<code>{html.escape(str(error))}</code>"
         )
         await self._send_notification("message_delete_failure", message)
+
+    async def send_cache_full_notification(self):
+        """Sends a one-time critical alert when all cache channels are full."""
+        message = (
+            f"⚠️ <b><u>WARNING: Cache Channels Full</u></b> ⚠️\n\n"
+            f"All configured cache channels have reached their limits.\n\n"
+            f"<b><u>Consequences:</u></b>\n"
+            f"The bot can no longer cache new sticker packs. Performance for frequently requested packs will be degraded until this is resolved.\n\n"
+            f"<b><u>Action Required:</u></b>\n"
+            f"Add new channel IDs to the <code>CACHE_CHANNEL_IDS</code> in the .env file.\n"
+        )
+        await self._send_notification("cache_channels_full", message)

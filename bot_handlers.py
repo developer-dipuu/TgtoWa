@@ -39,6 +39,7 @@ class BotHandlers:
         """
         ensure_directories()
         self.shutting_down = False
+        self.cache_full_notified = False
         self.client = client
         self.network_task = NetworkTask(self.client)
         self.converter = StickerConverter(self.client)
@@ -317,6 +318,14 @@ class BotHandlers:
             logger.error(f"An error while reacting to message {msg_id} in chat {chat_id}: {e}")
             return False
         return True
+    
+    async def get_cache_channel(self):
+        cache_channel = await db.get_or_create_cache_channel()
+        if cache_channel: return cache_channel
+        if not self.cache_full_notified:
+            asyncio.create_task(self.notification_manager.send_cache_full_notification())
+            self.cache_full_notified = True
+        return None
     
     async def delete_cache(self, set_id):
         position = await db.remove_from_cache(set_id) 
@@ -1269,92 +1278,95 @@ class BotHandlers:
         # If we get here conversion was successful now we upload to channel for cache or if cahing diabled upload directly
         cached_messages = []
         target_cache_channel = None
-        if self.cache_enabled and not item.custom_title and not item.custom_author:
-            target_cache_channel = await db.get_or_create_cache_channel()
-            if target_cache_channel:
+        if (
+            self.cache_enabled 
+            and not item.custom_title 
+            and not item.custom_author
+            and (target_cache_channel:= await self.get_cache_channel())
+        ):
+            if not is_silent_mode:
+                await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
+            
+            all_uploads_succeeded = True
+            try:
+                cached_messages = await self.network_task.upload_files(wastickers_files, pack_url, safe_pack_title, target_cache_channel)
+                if not cached_messages or len(cached_messages) != len(wastickers_files): all_uploads_succeeded = False
+                # Now, log this to our database
+                if all_uploads_succeeded:
+                    status_for_db = "completed"
+                    cached_messages_id = [cached_message.id for cached_message in cached_messages]
+                    await db.add_to_cache(sticker_set.set.id, new_cache_score, target_cache_channel, cached_messages_id)
+                    logger.info(f"Successfully cached pack {sticker_set.set.id} with message IDs: {cached_messages_id}")
+
+            except* FileUploadTimeoutError as eg_t:
+                all_uploads_succeeded = False
+                status_for_db = "failed_upload_timeout_while_caching"
+                # collecting erros 
+                failed_uploads = []
+                first_failed_index = eg_t.exceptions[0].index
+                for exc in eg_t.exceptions:
+                    logger.error(f"Upload timeout while caching for user {item.user_id}, file {exc.file_path}")
+                    failed_uploads.append(exc.file_path)
+                # reporting to user
                 if not is_silent_mode:
-                    await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
-                
-                all_uploads_succeeded = True
+                    if num_packs == 1:
+                        await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
+                    else:
+                        await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack part {first_failed_index+1}. Please try again later.")
+                #notify owner
+                user = await self.client.get_entity(item.user_id)
+                user_display_name =get_user_display_name(user)
+                await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadTimeoutCaching", f"File: {', '.join(failed_uploads)}", sticker_set=sticker_set)
+            except* FileUploadWrapperError as eg_w:
+                all_uploads_succeeded = False
+                status_for_db = "failed_upload_error_while_caching"
+                # collecting erros 
+                failed_uploads = []
+                first_failed_index = eg_w.exceptions[0].index
+                for exc in eg_w.exceptions:
+                    # Log the original exception for full debug info
+                    logger.error(f"Upload error while caching for user {item.user_id}, file {exc.file_path}", exc_info=exc.original_exception)
+                    failed_uploads.append(exc.file_path)
+                # reporting to user
+                if not is_silent_mode:
+                    if num_packs == 1:
+                        await self.client.send_message(item.chat_id, f"❌ Failed to upload pack due to an error. Please use **/contact** to report it to the admins.")
+                    else:
+                        await self.client.send_message(item.chat_id, f"❌ Failed to upload pack part {first_failed_index+1} due to an error. Please use **/contact** to report it to the admins.")
+                #notify owner
+                user = await self.client.get_entity(item.user_id)
+                user_display_name =get_user_display_name(user)
+                await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadErrorCaching", f"File: {", ".join(failed_uploads)}", sticker_set=sticker_set)
+            finally:
+                # This ensures temporary .wastickers files are deleted if they weren't cached and moved.
+                for file_path in wastickers_files:
+                    if os.path.exists(file_path):
+                        logger.debug(f"Cleaning up temporary output file: {file_path}")
+                        os.remove(file_path)
+                # if we coudnt uplaod all files sucessfully delete others too
+                if not all_uploads_succeeded and cached_messages:
+                    cached_message_ids = [message.id for message in cached_messages]
+                    custom_log_msg = "Failed to delete incompletely uploaded pack."
+                    asyncio.create_task(self.delete_multiple_messages(target_cache_channel, cached_message_ids, custom_log_msg))
+
+            # ----- now send from cache (if not a system task) --------
+            if not is_silent_mode and all_uploads_succeeded:
                 try:
-                    cached_messages = await self.network_task.upload_files(wastickers_files, pack_url, safe_pack_title, target_cache_channel)
-                    if not cached_messages or len(cached_messages) != len(wastickers_files): all_uploads_succeeded = False
-                    # Now, log this to our database
-                    if all_uploads_succeeded:
-                        status_for_db = "completed"
-                        cached_messages_id = [cached_message.id for cached_message in cached_messages]
-                        await db.add_to_cache(sticker_set.set.id, new_cache_score, target_cache_channel, cached_messages_id)
-                        logger.info(f"Successfully cached pack {sticker_set.set.id} with message IDs: {cached_messages_id}")
+                    for message in cached_messages:
+                        await self.client.send_message(entity=item.chat_id, message=message, link_preview=False)
 
-                except* FileUploadTimeoutError as eg_t:
-                    all_uploads_succeeded = False
-                    status_for_db = "failed_upload_timeout_while_caching"
-                    # collecting erros 
-                    failed_uploads = []
-                    first_failed_index = eg_t.exceptions[0].index
-                    for exc in eg_t.exceptions:
-                        logger.error(f"Upload timeout while caching for user {item.user_id}, file {exc.file_path}")
-                        failed_uploads.append(exc.file_path)
-                    # reporting to user
-                    if not is_silent_mode:
-                        if num_packs == 1:
-                            await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
-                        else:
-                            await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack part {first_failed_index+1}. Please try again later.")
-                    #notify owner
-                    user = await self.client.get_entity(item.user_id)
-                    user_display_name =get_user_display_name(user)
-                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadTimeoutCaching", f"File: {', '.join(failed_uploads)}", sticker_set=sticker_set)
-                except* FileUploadWrapperError as eg_w:
-                    all_uploads_succeeded = False
-                    status_for_db = "failed_upload_error_while_caching"
-                    # collecting erros 
-                    failed_uploads = []
-                    first_failed_index = eg_w.exceptions[0].index
-                    for exc in eg_w.exceptions:
-                        # Log the original exception for full debug info
-                        logger.error(f"Upload error while caching for user {item.user_id}, file {exc.file_path}", exc_info=exc.original_exception)
-                        failed_uploads.append(exc.file_path)
-                    # reporting to user
-                    if not is_silent_mode:
-                        if num_packs == 1:
-                            await self.client.send_message(item.chat_id, f"❌ Failed to upload pack due to an error. Please use **/contact** to report it to the admins.")
-                        else:
-                            await self.client.send_message(item.chat_id, f"❌ Failed to upload pack part {first_failed_index+1} due to an error. Please use **/contact** to report it to the admins.")
-                    #notify owner
-                    user = await self.client.get_entity(item.user_id)
-                    user_display_name =get_user_display_name(user)
-                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadErrorCaching", f"File: {", ".join(failed_uploads)}", sticker_set=sticker_set)
-                finally:
-                    # This ensures temporary .wastickers files are deleted if they weren't cached and moved.
-                    for file_path in wastickers_files:
-                        if os.path.exists(file_path):
-                            logger.debug(f"Cleaning up temporary output file: {file_path}")
-                            os.remove(file_path)
-                    # if we coudnt uplaod all files sucessfully delete others too
-                    if not all_uploads_succeeded and cached_messages:
-                        cached_message_ids = [message.id for message in cached_messages]
-                        custom_log_msg = "Failed to delete incompletely uploaded pack."
-                        asyncio.create_task(self.delete_multiple_messages(target_cache_channel, cached_message_ids, custom_log_msg))
+                    await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
+                    status_for_db = "completed"
+                except UserIsBlockedError:
+                    # some dumbass block the bot even before it sends files
+                    status_for_db = "completed_but_blocked"
+                    logger.error(f"User has blocked the bot! Failed to forward cached messages for pack {sticker_set.set.id,} to user {item.user_id}.")
+                except Exception as e:
+                    logger.error(f"Failed to forward newly cached pack {sticker_set.set.id} to user {item.user_id}: {e}")
+                    await self.client.send_message(item.chat_id, "❌ An error occurred while sending your files. Please use **/contact** to report this.")
+                    status_for_db = "failed_forward"
 
-                # ----- now send from cache (if not a system task) --------
-                if not is_silent_mode and all_uploads_succeeded:
-                    try:
-                        for message in cached_messages:
-                            await self.client.send_message(entity=item.chat_id, message=message, link_preview=False)
-
-                        await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
-                        status_for_db = "completed"
-                    except UserIsBlockedError:
-                        # some dumbass block the bot even before it sends files
-                        status_for_db = "completed_but_blocked"
-                        logger.error(f"User has blocked the bot! Failed to forward cached messages for pack {sticker_set.set.id,} to user {item.user_id}.")
-                    except Exception as e:
-                        logger.error(f"Failed to forward newly cached pack {sticker_set.set.id} to user {item.user_id}: {e}")
-                        await self.client.send_message(item.chat_id, "❌ An error occurred while sending your files. Please use **/contact** to report this.")
-                        status_for_db = "failed_forward"
-
-        else: # caching is off or its a custom premium request
+        else: # caching is off or cache channels full or its a custom premium request
             if not is_silent_mode:
                 await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
                 

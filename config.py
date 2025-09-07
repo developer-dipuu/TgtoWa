@@ -108,6 +108,11 @@ NOTIFICATIONS = {
         "enabled": True,
         "mention_admins": True,
     },
+    # For when caching is enabled but all cache channels are full.
+    "cache_channels_full": {
+        "enabled": True,
+        "mention_admins": True,
+    },
     # For when the bot fails to delete files from a cache channel.
     "cache_delete_failure": {
         "enabled": True,
