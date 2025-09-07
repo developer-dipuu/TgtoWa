@@ -1177,7 +1177,7 @@ async def revert_cache_removal_and_log_junk(channel_id: int, message_ids: List[i
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (channel_id, message_id) DO NOTHING
         """, records_to_insert)
-    logger.warning(f"Logged {len(message_ids)} junk files for set {set_id} in channel {channel_id}.")
+    logger.info(f"Logged {len(message_ids)} junk files for set {set_id} in channel {channel_id}.")
 
 
 async def get_all_junk_files_grouped() -> List[asyncpg.Record]:
