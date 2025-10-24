@@ -1224,8 +1224,9 @@ class BotHandlers:
                 try:
                     await self.client.send_message(
                         item.chat_id,
-                        (f"⏱️ The conversion for your pack took longer than expected and has timed out.❌\n"
-                        f"Please try again later or with a different pack.\n\n"
+                        (f"⏱️ The conversion for your pack took longer than expected and has timed out.❌\n\n"
+                        f"It is generally due to Telegram server issues.\n"
+                        f"**Please try again after some time or with a different pack.**\n\n"
                         f"If the problem persists, ping us at **{SUPPORT_GROUP}**")
                     )
                 except Exception as e:
@@ -2067,7 +2068,7 @@ class BotHandlers:
             f"  • 🚫 Cancelled: `{stats['today_cancelled']}`\n\n"
             f"⏳ **Live Queue Status:**\n"
             f"  • Waiting: `{q_stats['total_waiting']}`\n"
-            f"  • Currently Processing: `{processing_user}`"
+            f"  • Currently Processing: {processing_user}"
         )
 
         buttons = [
@@ -2099,10 +2100,12 @@ class BotHandlers:
                 await event.reply(f"️🤷‍♂️ User `{target_user.id}` is already an admin.")
                 return
                 
-            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-            await db.add_admin(target_user.id, target_user.username, event.sender_id)
-            await event.reply(f"👑 Successfully promoted **{full_name}** (`{target_user.id}`) to Admin!")
-            logger.info(f"User {target_user.id} promoted to admin by {event.sender_id}")
+            if await db.add_admin(target_user.id, target_user.username, event.sender_id):
+                full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+                await event.reply(f"👑 Successfully promoted **{full_name}** (`{target_user.id}`) to Admin!")
+                logger.info(f"User {target_user.id} promoted to admin by {event.sender_id}")
+            else:
+                await event.reply("❌ Failed to promote user. Maybe they are already an admin.")
         except Exception as e:
             await event.reply(f"An error has occurred:\n```{e}```")
             logger.info(f"An error has occurred while promoting someone to admin by {event.sender_id}. Error: {e}")
@@ -2826,8 +2829,7 @@ class BotHandlers:
             raise StopPropagation
             
         try:
-            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-            await db.add_premium(target_user.id, target_user.username, duration_days, event.sender_id)
+            success = await db.add_premium(target_user.id, target_user.username, duration_days, event.sender_id)
         except OverflowError as e:
             await event.reply("❌ Duration is too long.")
             raise StopPropagation
@@ -2835,14 +2837,16 @@ class BotHandlers:
             logger.error(f"An error has occurred while adding {target_user.id} to premium by {event.sender_id}. Error: {e}")
             await event.reply("❌ An error has occurred maybe this is not a valid user or the user hasn't started the bot.")
             raise StopPropagation
-        
-        expiry = datetime.now(timezone.utc) + timedelta(days=duration_days)
-        
-        await event.reply(
-            f"⭐ Successfully granted premium to **{full_name}** (`{target_user.id}`)!\n"
-            f"Expires in: `{duration_days}` days (on `{expiry.strftime('%Y-%m-%d %H:%M')} UTC`)."
-        )
-        logger.info(f"User {target_user.id} granted {duration_days} days of premium by admin: {event.sender_id}")
+        if success:
+            expiry = datetime.now(timezone.utc) + timedelta(days=duration_days)
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+            await event.reply(
+                f"⭐ Successfully granted premium to **{full_name}** (`{target_user.id}`)!\n"
+                f"Expires in: `{duration_days}` days (on `{expiry.strftime('%Y-%m-%d %H:%M')} UTC`)."
+            )
+            logger.info(f"User {target_user.id} granted {duration_days} days of premium by admin: {event.sender_id}")
+        else:
+            await event.reply("❌ Failed to add user to premium. Maybe they are already premium.")
         raise StopPropagation
     
     async def remove_premium_command(self, event: events.NewMessage.Event):
@@ -2967,39 +2971,47 @@ class BotHandlers:
             await event.reply("ℹ️ **Usage:** `/getstats <user_id/@username>` or reply to a user's message.")
             raise StopPropagation
         
-        is_premium = await db.is_premium(target_user.id)
-
-        # Get user role for display
-        role = "👤 Regular User"
-        if db.is_owner(target_user.id):
-            role = "👑 Owner"
-        elif await db.is_admin(target_user.id):
-            role = "👮‍♂️ Admin"
-        elif is_premium:
-            role = "⭐ Premium User"
-            duration_left = await db.get_premium_duration_left(target_user.id)
-            if duration_left:
-                days = duration_left.days
-                hours = duration_left.seconds // 3600
-                minutes = (duration_left.seconds % 3600) // 60
-                role += f"\n⏳ **Expires in**: {days}d {hours}h {minutes}m"
+        if await db.is_user(target_user.id):
+            is_premium = await db.is_premium(target_user.id)
+            
+            # Get user role for display
+            role = "👤 Regular User"
+            if db.is_owner(target_user.id):
+                role = "👑 Owner"
+            elif await db.is_admin(target_user.id):
+                role = "👮‍♂️ Admin"
+            elif is_premium:
+                role = "⭐ Premium User"
+                duration_left = await db.get_premium_duration_left(target_user.id)
+                if duration_left:
+                    days = duration_left.days
+                    hours = duration_left.seconds // 3600
+                    minutes = (duration_left.seconds % 3600) // 60
+                    role += f"\n⏳ **Expires in**: {days}d {hours}h {minutes}m"
+            
+            stats = await db.get_user_stats(target_user.id)
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+            daily_usage = await db.get_daily_usage(target_user.id)
+            daily_limit = DAILY_LIMIT_PREMIUM if is_premium else DAILY_LIMIT_REGULAR
+            limit_str = f"{daily_usage}/{daily_limit}" if daily_limit > 0 else "Unlimited"
+            
+            message = (
+                f"📊 **Stats for [{full_name}](tg://user?id={target_user.id})** (`{target_user.id}`)\n\n"
+                f"**Status**: {role}\n"
+                f"**Today's Usage**: `{limit_str}`\n\n"
+                f"**Conversions Log**:\n"
+                f"  • Total Requests: `{stats['total']}`\n"
+                f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
+                f"  • ❌ Failed: `{stats['failed']}`\n"
+                f"  • 🚫 Cancelled: `{stats['cancelled']}`"
+            )
+        else:
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+            message = f"🫤 The user **[{full_name}](tg://user?id={target_user.id})** has not started the bot yet."
         
-        stats = await db.get_user_stats(target_user.id)
-        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-        daily_usage = await db.get_daily_usage(target_user.id)
-        daily_limit = DAILY_LIMIT_PREMIUM if is_premium else DAILY_LIMIT_REGULAR
-        limit_str = f"{daily_usage}/{daily_limit}" if daily_limit > 0 else "Unlimited"
+        if await db.is_banned(target_user.id):
+            message += "\n\n🚫 **This user has been banned.**"
         
-        message = (
-            f"📊 **Stats for {full_name}** (`{target_user.id}`)\n\n"
-            f"**Status**: {role}\n"
-            f"**Today's Usage**: `{limit_str}`\n\n"
-            f"**Conversions Log**:\n"
-            f"  • Total Requests: `{stats['total']}`\n"
-            f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
-            f"  • ❌ Failed: `{stats['failed']}`\n"
-            f"  • 🚫 Cancelled: `{stats['cancelled']}`"
-        )
         logger.info(f"Stats of user {target_user.id} has been fetched by admin: {event.sender_id}")
         await event.reply(message)
         raise StopPropagation
@@ -3045,10 +3057,16 @@ class BotHandlers:
             await event.reply("❌ Admins and Owners cannot be banned.")
             raise StopPropagation
 
-        await db.ban_user(target_user.id, event.sender_id, reason, is_silent=True)
-        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-        await event.reply(f"🚫 **Silently Banned {full_name}** (`{target_user.id}`).")
-        logger.info(f"User {target_user.id} silently banned by admin: {event.sender_id}. Reason: {reason}")
+        if await db.is_banned(target_user.id):
+            await event.reply("🤷‍♂️ This user is already banned.")
+            raise StopPropagation
+        
+        if await db.ban_user(target_user.id, event.sender_id, reason, is_silent=True):
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+            await event.reply(f"🚫 **Silently Banned {full_name}** (`{target_user.id}`).")
+            logger.info(f"User {target_user.id} silently banned by admin: {event.sender_id}. Reason: {reason}")
+        else:
+            await event.reply(f"❌ Failed to ban `{target_user.id}`. Maybe they are already banned.")
         raise StopPropagation
     
     # notified ban command 
@@ -3071,22 +3089,24 @@ class BotHandlers:
             await event.reply("🤷‍♂️ This user is already banned.")
             raise StopPropagation
 
-        await db.ban_user(target_user.id, event.sender_id, reason, is_silent=False)
-        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-        logger.info(f"User {target_user.id} banned by admin: {event.sender_id}. Reason: {reason}")
-        
-        notification_status = ""
-        try:
-            await self.client.send_message(
-                target_user.id,
-                f"You have been banned from using this bot by an administrator.\n\n**Reason:** {reason}"
-            )
-            notification_status = "User has been notified."
-        except Exception as e:
-            logger.warning(f"Could not notify user {target_user.id} about their ban: {e}")
-            notification_status = "Could not notify the user (they may have blocked the bot or haven't started yet)."
+        if await db.ban_user(target_user.id, event.sender_id, reason, is_silent=False):
+            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+            logger.info(f"User {target_user.id} banned by admin: {event.sender_id}. Reason: {reason}")
+            
+            notification_status = ""
+            try:
+                await self.client.send_message(
+                    target_user.id,
+                    f"🚫 **You have been banned** from using this bot by an administrator.\n\n**Reason:** {reason}"
+                )
+                notification_status = "User has been notified."
+            except Exception as e:
+                logger.warning(f"Could not notify user {target_user.id} about their ban: {e}")
+                notification_status = "Could not notify the user (they may have blocked the bot or haven't started yet)."
 
-        await event.reply(f"🚫 **Banned {full_name}** (`{target_user.id}`).\n{notification_status}")
+            await event.reply(f"🚫 **Banned {full_name}** (`{target_user.id}`).\n{notification_status}")
+        else:
+            await event.reply("❌ Failed to ban user. User might have already been banned.")
         raise StopPropagation
 
     # unban command
