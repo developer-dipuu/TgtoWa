@@ -569,46 +569,50 @@ async def update_conversion_log(log_id: int, status: str, completion_time: datet
             await conn.execute("UPDATE user_stats SET total_requests = total_requests + 1 WHERE user_id = $1", user_id)
 
 
-########### Role Checks (Owner, Admin, Premium) ###########
+########### Role Checks (Owner, Users, Admin, Premium) ###########
 def is_owner(user_id: int) -> bool:
     """Checks if a user is the owner."""
     return user_id == OWNER_ID
+
+async def is_user(user_id: int) -> bool:
+    """Checks if a user has started the bot."""
+    return await _pool.fetchval(
+        "SELECT 1 FROM users where user_id = $1", user_id
+    ) is not None
 
 async def is_admin(user_id: int) -> bool:
     """Checks if a user is an admin or the owner."""
     if is_owner(user_id):
         return True
-    row = await _pool.fetchrow("SELECT 1 FROM admins WHERE user_id = $1", user_id)
-    return row is not None
+    return await _pool.fetchval("SELECT 1 FROM admins WHERE user_id = $1", user_id) is not None
 
 async def is_premium(user_id: int) -> bool:
     """Checks if a user has an active premium subscription."""
-    row = await _pool.fetchrow(
+    return await _pool.fetchval(
         "SELECT 1 FROM premium_users WHERE user_id = $1 AND expiry_date > $2",
         user_id, utcnow()
-    )
-    return row is not None
+    ) is not None
 
 #################  Admin Management ###########
-async def add_admin(user_id: int, username: str, promoted_by: int):
+async def add_admin(user_id: int, username: str, promoted_by: int) -> bool:
     """Promotes a user to admin."""
     now = utcnow()
     async with _pool.acquire() as conn, conn.transaction():
-        await conn.execute("""
+        inserted = await conn.fetchval("""
             INSERT INTO admins (user_id, username, promoted_by, promotion_date)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (user_id) DO UPDATE SET
-                username = EXCLUDED.username,
-                promoted_by = EXCLUDED.promoted_by,
-                promotion_date = EXCLUDED.promotion_date
+            ON CONFLICT (user_id) DO NOTHING
+            RETURNING 1
         """, user_id, username, promoted_by, now
         )
-
-        await conn.execute("""
-            INSERT INTO admin_history (admin_id, target_user_id, action, action_time)
-            VALUES ($1, $2, 'promoted', $3)
-        """, promoted_by, user_id, now
-        )
+        if inserted:
+            await conn.execute("""
+                INSERT INTO admin_history (admin_id, target_user_id, action, action_time)
+                VALUES ($1, $2, 'promoted', $3)
+            """, promoted_by, user_id, now
+            )
+            return True
+    return False
 
 async def remove_admin(user_id: int, demoted_by: int) -> bool:
     """Demotes an admin."""
@@ -628,12 +632,12 @@ async def remove_admin(user_id: int, demoted_by: int) -> bool:
 
 ############# Premium User Management ############
 
-async def add_premium(user_id: int, username: str, duration_days: int, added_by: int):
-    """Adds or extends a user's premium subscription."""
+async def add_premium(user_id: int, username: str, duration_days: int, added_by: int) -> bool:
+    """Strictly only adds a user to premium. If you want to extend premium use manage_premium_duration"""
     now = utcnow()
     expiry_date = now + timedelta(days=duration_days)
     async with _pool.acquire() as conn, conn.transaction():
-        await conn.execute(
+        inserted = await conn.fetchval(
             """
             INSERT INTO premium_users (user_id, username, added_by, start_date, expiry_date) 
             VALUES ($1, $2, $3, $4, $5)
@@ -642,39 +646,39 @@ async def add_premium(user_id: int, username: str, duration_days: int, added_by:
                 added_by = EXCLUDED.added_by,
                 start_date = EXCLUDED.start_date,
                 expiry_date = EXCLUDED.expiry_date
+            WHERE premium_users.expiry_date <= EXCLUDED.start_date
+            RETURNING 1
             """,
             user_id, username, added_by, now, expiry_date
         )
         # Log to history with all details
-        await conn.execute(
-            "INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days, previous_expiry_date, new_expiry_date, action_time) VALUES ($1, $2, 'added', $3, NULL, $4, $5)",
-            added_by, user_id, duration_days, expiry_date, now
-        )
+        if inserted:
+            await conn.execute(
+                "INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days, previous_expiry_date, new_expiry_date, action_time) VALUES ($1, $2, 'added', $3, NULL, $4, $5)",
+                added_by, user_id, duration_days, expiry_date, now
+            )
+            return True
+    return False
 
 async def remove_premium(user_id: int, admin_id: int) -> bool:
     """Removes a user's premium subscription."""
     now = utcnow()
     async with _pool.acquire() as conn, conn.transaction():
-        # Get the current expiry date BEFORE deleting
+        # Delete and get the current expiry date
         prev_expiry = await conn.fetchval(
-            "SELECT expiry_date FROM premium_users WHERE user_id = $1",
-            user_id
+            "DELETE FROM premium_users WHERE user_id = $1 and expiry_date > NOW() RETURNING expiry_date", user_id
         )
-
-        deleted = await conn.fetchval(
-            "DELETE FROM premium_users WHERE user_id = $1 RETURNING 1", user_id
-        )
-        if not deleted:
-            return False
         
         # Log the removal action
-        await conn.execute("""
-            INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days,
-                                         previous_expiry_date, new_expiry_date, action_time)
-            VALUES ($1, $2, 'removed', NULL, $3, NULL, $4)
-        """, admin_id, user_id, prev_expiry, now
-        )
-    return True
+        if prev_expiry:
+            await conn.execute("""
+                INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days,
+                                            previous_expiry_date, new_expiry_date, action_time)
+                VALUES ($1, $2, 'removed', NULL, $3, NULL, $4)
+            """, admin_id, user_id, prev_expiry, now
+            )
+            return True
+    return False
     
 async def get_premium_duration_left(user_id: int) -> Optional[timedelta]:
     """
@@ -726,36 +730,33 @@ async def remove_expired_premium_users() -> int:
     Returns the number of users removed.
     """
     now = utcnow()
-    system_admin_id = 0 # Using 0 as a special ID for automated system actions
+    system_admin_id = 0
 
     async with _pool.acquire() as conn, conn.transaction():
 
-        # First, find all users whose subscriptions have expired to log them
-        expired_users = await conn.fetch(
-            "SELECT user_id, expiry_date FROM premium_users WHERE expiry_date <= $1", now
-        )
+        # Delete expired users and return user_id and expiry_date
+        expired_users = await conn.fetch("""
+            DELETE FROM premium_users
+            WHERE expiry_date <= $1
+            RETURNING user_id, expiry_date
+        """, now)
 
         if not expired_users:
             return 0 # No one to remove
 
-        # Log that these users expired before we delete them
-        history_logs = []
-        for user in expired_users:
-            # We log the action as 'expired' by the SYSTEM (admin_id=0)
-            history_logs.append(
-                (system_admin_id, user['user_id'], 'expired', None, user['expiry_date'], None, now)
-            )
+        # Log expired users
+        history_logs = [
+            (system_admin_id, u['user_id'], 'expired', None, u['expiry_date'], None, now)
+            for u in expired_users
+        ]
         
         await conn.executemany("""
             INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days,
-                                         previous_expiry_date, new_expiry_date, action_time)
+                                        previous_expiry_date, new_expiry_date, action_time)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
         """, history_logs)
-
-        # Now delete the expired users from the main premium table
-        deleted_rows = await conn.execute("DELETE FROM premium_users WHERE expiry_date <= $1 RETURNING 1" , now)
-        removed_count = len(deleted_rows)    
-    return removed_count
+  
+    return len(expired_users)
 
 ########## Ban Management ###########
 
@@ -765,26 +766,26 @@ async def is_banned(user_id: int) -> bool:
         "SELECT 1 FROM banned_users WHERE user_id = $1", user_id
     ) is not None
 
-async def ban_user(user_id: int, admin_id: int, reason: Optional[str], is_silent: bool):
+async def ban_user(user_id: int, admin_id: int, reason: Optional[str], is_silent: bool) -> bool:
     """Adds a user to the banned_users table and logs it to history."""
     now = utcnow()
     async with _pool.acquire() as conn, conn.transaction():
         # Add to currently banned table
-        await conn.execute("""
+        inserted = await conn.fetchval("""
             INSERT INTO banned_users (user_id, banned_by_admin_id, ban_date, is_silent, reason)
             VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (user_id) DO UPDATE SET
-                banned_by_admin_id = EXCLUDED.banned_by_admin_id,
-                ban_date = EXCLUDED.ban_date,
-                is_silent = EXCLUDED.is_silent,
-                reason = EXCLUDED.reason
+            ON CONFLICT (user_id) DO NOTHING
+            RETURNING 1
         """, user_id, admin_id, now, is_silent, reason)
 
         # Add to history log
-        await conn.execute("""
-            INSERT INTO ban_history (target_user_id, admin_id, action, is_silent_ban, reason, action_time)
-            VALUES ($1, $2, 'banned', $3, $4, $5)
-        """, user_id, admin_id, is_silent, reason, now)
+        if inserted:
+            await conn.execute("""
+                INSERT INTO ban_history (target_user_id, admin_id, action, is_silent_ban, reason, action_time)
+                VALUES ($1, $2, 'banned', $3, $4, $5)
+            """, user_id, admin_id, is_silent, reason, now)
+            return True
+    return False
 
 async def unban_user(user_id: int, admin_id: int, reason: Optional[str]) -> bool:
     """Removes a user from the banned_users table and logs it to history."""
