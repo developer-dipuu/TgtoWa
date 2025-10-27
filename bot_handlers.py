@@ -94,6 +94,7 @@ class BotHandlers:
         self.client.add_event_handler(self.premium_command, events.NewMessage(pattern='/premium', func=lambda e: e.is_private))
         self.client.add_event_handler(self.commands_command, events.NewMessage(pattern='/commands', func=lambda e: e.is_private))
         self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest@'+ self.bot_username.lstrip('@') + r'(?:$|\s.*)', func=lambda e: not e.is_private))
         self.client.add_event_handler(self.contact_command, events.NewMessage(pattern='/contact', func=lambda e: e.is_private))
         # owner commands
         self.client.add_event_handler(self.promote_command, events.NewMessage(pattern=r'/promote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
