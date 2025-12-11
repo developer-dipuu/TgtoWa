@@ -3239,6 +3239,9 @@ class BotHandlers:
                 ]
                 await event.edit(COMMANDS_MESSAGE, buttons=buttons, parse_mode='html')
 
+            elif data == "contact_cancel_reply":
+                await event.edit("❌ Action cancelled. The reply was not sent.")
+                
             elif data.startswith("contact_send_"):
                 await event.answer()
                 *_, sid = data.split("_", 2)
@@ -3360,9 +3363,6 @@ class BotHandlers:
                     [Button.inline("🔍 Show Reply Details", f"contact_details_{contact_id_str}_{admin_msg_id_str}")]  
                 ]
                 await event.edit(prompt_text, buttons=buttons)
-
-            elif data == "contact_cancel_reply":
-                await event.edit("❌ Action cancelled. The reply was not sent.")
 
             elif data.startswith("cancel_session_"):
                 try:
