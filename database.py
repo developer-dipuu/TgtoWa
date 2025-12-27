@@ -236,7 +236,7 @@ async def init_db():
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS sticker_set_stats (
                         set_id BIGINT PRIMARY KEY,
-                        short_name TEXT UNIQUE NOT NULL,
+                        short_name TEXT UNIQUE,
                         is_emoji BOOLEAN NOT NULL,
                         pack_title TEXT,
                         sticker_count INTEGER,
@@ -910,35 +910,56 @@ async def add_or_update_sticker_set_stats(set_id: int, short_name: str, is_emoji
 
     rounded_duration = round(conversion_duration, 2)
     now = utcnow()
-    row = await _pool.fetchrow(f"""
-        INSERT INTO sticker_set_stats (
-            set_id, short_name, is_emoji, pack_title, sticker_count,
-            request_count, last_conversion_duration, cache_score, last_updated
-        )
-        VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8)
-        ON CONFLICT (set_id) DO UPDATE SET
-            pack_title = EXCLUDED.pack_title,
-            short_name = EXCLUDED.short_name,
-            sticker_count = EXCLUDED.sticker_count,
-            request_count = CASE WHEN $9 THEN sticker_set_stats.request_count
-                                 ELSE sticker_set_stats.request_count + 1 END,
-            last_conversion_duration = EXCLUDED.last_conversion_duration,
-            cache_score = ({CACHE_SCORE_TIME_WEIGHT} * EXCLUDED.last_conversion_duration) +
-                          ({CACHE_SCORE_REQUEST_WEIGHT} * (
-                              CASE WHEN $9 THEN sticker_set_stats.request_count
-                                   ELSE sticker_set_stats.request_count + 1 END
-                          )),
-            last_updated = EXCLUDED.last_updated
-        RETURNING cache_score
-    """, set_id, short_name, is_emoji, pack_title, sticker_count,
-         rounded_duration,
-         (CACHE_SCORE_TIME_WEIGHT * rounded_duration) + (CACHE_SCORE_REQUEST_WEIGHT * 1),
-         now,
-         is_system_process)
     
-    new_cache_score = float(row["cache_score"])
-    logger.info(f"Updated stats for pack {short_name} (ID: {set_id}). New score: {new_cache_score:.2f}")
-    return new_cache_score
+    # we need to go twice for retry in case of short_name conflict
+    for _ in range(2): 
+        try:
+            row = await _pool.fetchrow(f"""
+                INSERT INTO sticker_set_stats (
+                    set_id, short_name, is_emoji, pack_title, sticker_count,
+                    request_count, last_conversion_duration, cache_score, last_updated
+                )
+                VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8)
+                ON CONFLICT (set_id) DO UPDATE SET
+                    pack_title = EXCLUDED.pack_title,
+                    short_name = EXCLUDED.short_name,
+                    sticker_count = EXCLUDED.sticker_count,
+                    request_count = CASE WHEN $9 THEN sticker_set_stats.request_count
+                                         ELSE sticker_set_stats.request_count + 1 END,
+                    last_conversion_duration = EXCLUDED.last_conversion_duration,
+                    cache_score = ({CACHE_SCORE_TIME_WEIGHT} * EXCLUDED.last_conversion_duration) +
+                                  ({CACHE_SCORE_REQUEST_WEIGHT} * (
+                                      CASE WHEN $9 THEN sticker_set_stats.request_count
+                                           ELSE sticker_set_stats.request_count + 1 END
+                                  )),
+                    last_updated = EXCLUDED.last_updated
+                RETURNING cache_score
+            """, set_id, short_name, is_emoji, pack_title, sticker_count,
+                 rounded_duration,
+                 (CACHE_SCORE_TIME_WEIGHT * rounded_duration) + (CACHE_SCORE_REQUEST_WEIGHT * 1),
+                 now,
+                 is_system_process)
+            
+            new_cache_score = float(row["cache_score"])
+            logger.info(f"Updated stats for pack {short_name} (ID: {set_id}). New score: {new_cache_score:.2f}")
+            return new_cache_score
+
+        except asyncpg.UniqueViolationError as e:
+            # check if its the short_name error
+            if "sticker_set_stats_short_name_key" in str(e):
+                logger.warning(f"Conflict detected for short_name '{short_name}' (New Set ID: {set_id}). "
+                               f"Nullifying short_name for the old entry to resolve conflict.")
+                async with _pool.acquire() as conn, conn.transaction():
+                    result = await conn.execute(
+                        "UPDATE sticker_set_stats SET short_name = NULL WHERE short_name = $1", 
+                        short_name
+                    )
+                    logger.info(f"Nullify result: {result}")
+                # now we loop back and retry
+                continue
+            else:
+                # some other error
+                raise e
 
 async def get_or_create_cache_channel() -> Optional[int]:
     """Finds a cache channel with space, or returns the next available one."""
@@ -1102,7 +1123,7 @@ async def get_all_cached_pack_ids() -> List[int]:
 
 async def get_all_known_pack_short_names() -> List[str]:
     """Gets a list of short names of all currently known packs."""
-    results = await _pool.fetch("SELECT short_name FROM sticker_set_stats")
+    results = await _pool.fetch("SELECT short_name FROM sticker_set_stats WHERE short_name IS NOT NULL")
     return [result['short_name'] for result in results]
 
 async def get_set_id_by_short_name(short_name: str) -> Optional[int]:
@@ -1112,7 +1133,7 @@ async def get_set_id_by_short_name(short_name: str) -> Optional[int]:
 async def get_top_packs_by_score(limit: int) -> List[str]:
     """Gets the top N sticker packs ordered by their cache score, returns a list of shortname strings"""
     rows = await _pool.fetch(
-            "SELECT short_name FROM sticker_set_stats ORDER BY cache_score DESC LIMIT $1",
+            "SELECT short_name FROM sticker_set_stats WHERE short_name IS NOT NULL ORDER BY cache_score DESC LIMIT $1",
             limit)
     return [row['short_name'] for row in rows]
 
@@ -1127,7 +1148,7 @@ async def get_non_cached_packs(limit: Optional[int] = None) -> List[str]:
         SELECT sss.short_name
         FROM sticker_set_stats sss
         LEFT JOIN cached_packs cp ON sss.set_id = cp.set_id
-        WHERE cp.set_id IS NULL
+        WHERE cp.set_id IS NULL AND sss.short_name IS NOT NULL
         ORDER BY sss.cache_score DESC
     """
     rows = []
@@ -1236,7 +1257,7 @@ async def calculate_and_store_popular_packs():
 
         # --- Calculate All-Time Top 50 ---
         all_time_packs = await conn.fetch("""
-            SELECT pack_title, short_name, is_emoji FROM sticker_set_stats ORDER BY request_count DESC LIMIT 50
+            SELECT pack_title, short_name, is_emoji FROM sticker_set_stats WHERE short_name IS NOT NULL ORDER BY request_count DESC LIMIT 50
         """)
         
         all_time_inserts = []
