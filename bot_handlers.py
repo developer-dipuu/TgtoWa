@@ -2249,10 +2249,11 @@ class BotHandlers:
                     return
                 except Exception as e:
                     logger.error(f"Logs file upload failed. Error: {e}")
-                    await event.reply("Error: Logs file upload failed.\n**Error**: {e}")
+                    await event.reply(f"Error: Logs file upload failed.\n**Error**: {e}")
                     return
             except Exception as e:
                 logger.error(f"An error occured: {e}")
+                await event.reply(f"Error: An error occured: {e}")
             finally:
                 if os.path.exists(zip_path):
                     os.remove(zip_path) # Clean up the zip file
@@ -2263,7 +2264,8 @@ class BotHandlers:
             # .screenrc names it based on session and window e.g. tgBot-0.log
             try:
                 latest_logs = glob.glob(os.path.join(log_dir, '*.log'))
-                
+                latest_logs = [f for f in latest_logs if os.path.getsize(f) > 0]
+                latest_logs.sort(key=os.path.getmtime, reverse=True)
                 if latest_logs:
                     # Assuming the first one found is the active one
                     latest_log_path = latest_logs[0]
@@ -2275,13 +2277,14 @@ class BotHandlers:
                         return
                     except Exception as e:
                         logger.error(f"Logs file upload failed. Error: {e}")
-                        await event.reply("Error: Logs file upload failed.\n**Error**: {e}")
+                        await event.reply(f"Error: Logs file upload failed.\n**Error**: {e}")
                         return
                 else:
                     logger.error(f"Warning: No .log files found in {log_dir}")
                     await event.reply("🤔 No `.log` file found. Seems something's wrong.")
             except Exception as e:
                 logger.error(f"An error occured while getting logs: {e}")
+                await event.reply(f"Error: An error occured while getting logs.\n**Error**: {e}")
         raise StopPropagation
     
     async def toggle_cache_command(self, event: events.NewMessage.Event):
