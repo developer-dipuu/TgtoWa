@@ -322,6 +322,14 @@ class BotHandlers:
             logger.error(f"An error while reacting to message {msg_id} in chat {chat_id}: {e}")
             return False
         return True
+
+    async def _safe_reply(self, event, *args, **kwargs):
+        """Safely replies to an event, catching and logging any errors."""
+        try:
+            return await event.reply(*args, **kwargs)
+        except Exception as e:
+            logger.warning(f"Failed to reply in background: {e}")
+            return None
     
     async def get_cache_channel(self):
         cache_channel = await db.get_or_create_cache_channel()
@@ -1106,7 +1114,7 @@ class BotHandlers:
                 else:
                     message = "⏳ You're already in the queue! Please wait for your current request to complete."
 
-                asyncio.create_task(event.reply(message, buttons=[[Button.inline("📊 Check Queue", b"check_queue")]]))
+                asyncio.create_task(self._safe_reply(event, message, buttons=[[Button.inline("📊 Check Queue", b"check_queue")]]))
                 return
             
             # if check passes mark user as adding to queue
