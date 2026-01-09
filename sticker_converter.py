@@ -11,8 +11,6 @@ import logging
 from telethon import TelegramClient
 from telethon.tl.types import Document
 
-from tgs_to_webp import convert_tgs_to_webp
-from video_to_webp import convert_video_to_webp
 from config import *
 from utils import *
 
@@ -23,30 +21,65 @@ class StickerConverter:
         self.client = client
         self.network_task = NetworkTask(self.client)
 
-    def _process_static_image(self,input_path, output_path):
-        """Helper function to run PIL operations in a separate thread."""
-        with Image.open(input_path) as img:
-            if img.mode != 'RGBA':
-                img = img.convert('RGBA')
-            img.thumbnail(STICKER_DIMENSIONS, Image.Resampling.LANCZOS)
-            new_img = Image.new('RGBA', STICKER_DIMENSIONS, (0, 0, 0, 0))
-            x = (STICKER_DIMENSIONS[0] - img.width) // 2
-            y = (STICKER_DIMENSIONS[1] - img.height) // 2
-            new_img.paste(img, (x, y), img)
-            new_img.save(output_path, 'WEBP', quality=WEBP_QUALITY)
-        return True
     
+    async def _run_conversion_process(self, script_name: str, input_path: str, output_path: str) -> bool:
+        """Run conversion script in a separate process with timeout."""
+        import sys
+        
+        script_path = os.path.join(os.path.dirname(__file__), script_name)
+        
+        # Build command: python script.py input output --width 512 ...
+        
+        try:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                script_path,
+                input_path,
+                output_path,
+                "--width", str(STICKER_DIMENSIONS[0]),
+                "--height", str(STICKER_DIMENSIONS[1]),
+                "--quality", str(WEBP_QUALITY)
+            )
+            
+            try:
+                # Wait for the process to finish with a timeout
+                await asyncio.wait_for(process.communicate(), timeout=CONVERSION_TIMEOUT)
+                
+                if process.returncode == 0:
+                    return True
+                else:
+                    logger.error(f"Conversion process failed with return code {process.returncode}")
+                    return False
+                    
+            except asyncio.TimeoutError:
+                logger.error(f"Conversion process timed out after {CONVERSION_TIMEOUT}s: {input_path}")
+                try:
+                    process.kill()
+                    await process.wait() 
+                except Exception:
+                    pass
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to run conversion process: {e}")
+            return False
+
     async def convert_to_webp(self, input_path: str, output_path: str) -> bool:
         """Convert various sticker/emoji formats to WebP."""
         try:
             file_ext = os.path.splitext(input_path)[1].lower() if input_path else ''
             
+            script_path = None
             if file_ext == '.tgs':
-                return await asyncio.to_thread(convert_tgs_to_webp, input_path, output_path, width= 512, height= 512, quality=WEBP_QUALITY)
+                script_path = 'tgs_to_webp.py'
             elif file_ext in ['.webm', '.mp4', '.gif', '.mov', '.mkv']:
-                return await asyncio.to_thread(convert_video_to_webp, input_path, output_path, width= 512, height= 512, quality=WEBP_QUALITY)
+                script_path = 'video_to_webp.py'
+            
+            if script_path:
+                 return await self._run_conversion_process(script_path, input_path, output_path)
             else: # Static image
-                 return await asyncio.to_thread(self._process_static_image, input_path, output_path)
+                 return await self._run_conversion_process('image_to_webp.py', input_path, output_path)
+
         except Exception as e:
             logger.error(f"Failed to convert {input_path} to WebP: {e}")
             return False

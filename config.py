@@ -52,6 +52,7 @@ DB_UPLOAD_TIMEOUT = 30
 DB_DUMP_TIMEOUT = 30
 MAX_DOWNLOAD_RETRIES = 3
 MAX_UPLOAD_RETRIES = 2
+CONVERSION_TIMEOUT = 30 # seconds to wait for a single sticker conversion process
 
 # ------- Database Credentials -------
 DB_NAME = os.getenv("DB_NAME")
