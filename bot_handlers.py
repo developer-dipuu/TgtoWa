@@ -86,21 +86,32 @@ class BotHandlers:
         """
         Registers all event handlers with the Telethon client.
         """
-        # user commands
+        username_regex = self.bot_username.lstrip('@')
+        
+        # user commands (Private)
         self.client.add_event_handler(self.start_command, events.NewMessage(pattern='/start', func=lambda e: e.is_private))
         self.client.add_event_handler(self.help_command, events.NewMessage(pattern='/help', func=lambda e: e.is_private))
         self.client.add_event_handler(self.queue_command, events.NewMessage(pattern='/queue', func=lambda e: e.is_private))
         self.client.add_event_handler(self.mystats_command, events.NewMessage(pattern='/mystats', func=lambda e: e.is_private))
         self.client.add_event_handler(self.premium_command, events.NewMessage(pattern='/premium', func=lambda e: e.is_private))
         self.client.add_event_handler(self.commands_command, events.NewMessage(pattern='/commands', func=lambda e: e.is_private))
-        self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest', func=lambda e: e.is_private))
-        self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest@'+ self.bot_username.lstrip('@') + r'(?:$|\s.*)', func=lambda e: not e.is_private))
         self.client.add_event_handler(self.contact_command, events.NewMessage(pattern='/contact', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest', func=lambda e: e.is_private))
+
+        # Group Handlers
+        self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest@'+ username_regex + r'(?:$|\s.*)', func=lambda e: not e.is_private))
+        self.client.add_event_handler(self.help_command, events.NewMessage(pattern='/help@'+ username_regex + r'(?:$|\s.*)', func=lambda e: not e.is_private))
+
+        # Restricted commands in groups (Redirect to DM)
+        restricted_cmds = ['start', 'queue', 'mystats', 'premium', 'commands', 'contact']
+        for cmd in restricted_cmds:
+            self.client.add_event_handler(self.restricted_command_handler, events.NewMessage(pattern=rf"/{cmd}@{username_regex}(?:$|\s.*)", func=lambda e: not e.is_private))
+
         # owner commands
         self.client.add_event_handler(self.promote_command, events.NewMessage(pattern=r'/promote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.demote_command, events.NewMessage(pattern=r'/demote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
         self.client.add_event_handler(self.broadcast_command, events.NewMessage(pattern=r'/broadcast(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
-        self.client.add_event_handler(self.broadcast_command, events.NewMessage(pattern=r'/broadcast@' + self.bot_username.lstrip('@') + r'(?:$|\s.*)', func=lambda e: not e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.broadcast_command, events.NewMessage(pattern=r'/broadcast@' + username_regex + r'(?:$|\s.*)', func=lambda e: not e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.send_command, events.NewMessage(pattern=r'/send(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.gstats_command, events.NewMessage(pattern=r'/gstats', func=lambda e: db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.getdb_command, events.NewMessage(pattern='/getdb', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
@@ -527,6 +538,61 @@ class BotHandlers:
                 )
 
         return pack_input
+
+    async def restricted_command_handler(self, event: events.NewMessage.Event):
+        """
+        Handles commands in groups by directing the user to DM.
+        """
+        # Extract the command, e.g., '/queue'
+        text = event.raw_text.split()[0].split('@')[0]
+        command = text.lstrip('/')
+        
+        bot_username_simple = self.bot_username.lstrip('@')
+        deep_link = f"https://t.me/{bot_username_simple}?start={command}"
+        message = ""
+        match command:
+            case 'start':
+                message = "👋 Hey there, I'm here to help you convert Telegram stickers and emoji packs to WhatsApp stickers!\n\nClick the button below to get started."
+                buttons = [
+                    [Button.url("Get Started", deep_link)]
+                ]
+            case 'queue':
+                message = "This command is not available in groups.\n\nPlease click the button below to see your queue position in private chat."
+                buttons = [
+                    [Button.url("⏳ Get Queue Position", deep_link)]
+                ]
+            case 'mystats':
+                message = "This command is not available in groups.\n\nPlease click the button below to see your stats in private chat."
+                buttons = [
+                    [Button.url("📊 Get My Stats", deep_link)]
+                ]
+            case 'premium':
+                message = "This command is not available in groups.\n\nPlease click the button below to see premium info in private chat."
+                buttons = [
+                    [Button.url("🌟 Premium Info", deep_link)]
+                ]
+            case 'commands':
+                message = "This command is not available in groups.\n\nPlease click the button below to see available commands in private chat."
+                buttons = [
+                    [Button.url("⚙️ Available Commands", deep_link)]
+                ]
+            case 'contact':
+                message = "This command is not available in groups.\n\nPlease click the button below to use it in private chat."
+                buttons = [
+                    [Button.url("💬 Contact", deep_link)]
+                ]
+            case _:
+                message = "This command is not available in groups.\n\nPlease click the button below to use it in private chat."
+                buttons = [
+                    [Button.url("📨 Continue in DM", deep_link)]
+                ]
+        
+        await event.reply(
+            message,
+            buttons=buttons
+        )
+
+        raise StopPropagation
 
     async def check_cache(self, chat_id, sender_id, msg_to_reply_id, sticker_set_info, log_id: Optional[int] = None) -> bool:
         """Checks if the sticker set is cached or not if cached it will diresticker_setctly send those files and return True,
@@ -1571,6 +1637,25 @@ class BotHandlers:
         # Log user on /start
         full_name = f"{user.first_name} {user.last_name or ''}".strip()
         await db.add_or_update_user(user.id, user.username, full_name)
+        
+        # Check for deep linking arguments
+        args = event.raw_text.split()
+        if len(args) > 1:
+            parameter = args[1].lower().strip()
+            
+            # Dispatch to appropriate handlers based on the parameter
+            if parameter == 'queue':
+                return await self.queue_command(event)
+            elif parameter == 'mystats':
+                return await self.mystats_command(event)
+            elif parameter == 'premium':
+                return await self.premium_command(event)
+            elif parameter == 'commands':
+                return await self.commands_command(event)
+            elif parameter == 'contact':
+                return await self.contact_command(event)
+            elif parameter == 'help':
+                return await self.help_command(event)
         
         buttons = [
             [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
