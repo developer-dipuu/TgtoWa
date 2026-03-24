@@ -1,4 +1,4 @@
-telethon==1.40.0
+telethon @ git+https://codeberg.org/Lonami/Telethon.git@v1
 pillow==11.3.0
 rlottie-python==1.3.7
 webp==0.4.0
