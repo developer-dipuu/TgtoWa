@@ -46,7 +46,7 @@ async def handle_shutdown_signal(handlers: 'BotHandlers', client: 'TelegramClien
     shutdown_signals += 1
     
     if shutdown_signals == 1:
-        logger.warning("Graceful shutdown initiated (1/2). Finishing current task...")
+        logger.warning("⚠️ Graceful shutdown initiated (1/2). Finishing current task... ⚠️")
         # Signal the queue processor to stop picking up new items
         handlers.shutting_down = True
         
@@ -102,7 +102,8 @@ async def main():
     # as QueueManager and SessionManager create their global instances queue_manager and session_manager respectively
     # which call get_pool and that would crash if init_pool haven't been called yet.
     # So we cant import them when init_pool havent been called yet.
-    # BotHandlers directly import global instance of both so we cant impot BotHandlers either 
+    # BotHandlers directly import global instance of both so we cant impot BotHandlers either
+    # Moreover we should only start these when we are confirmed to be LEADER instance
     from bot_handlers import BotHandlers
     from session_manager import session_manager
     from queue_manager import queue_manager
@@ -158,7 +159,7 @@ async def main():
         # The bot will run until you press Ctrl+C
         await client.run_until_disconnected()
     except Exception as e:
-        logger.error(f"Failed to start or run the bot: {e}")
+        logger.error(f"Failed to start or run the bot: {e}", exc_info=True)
     finally:
         logger.info("Bot stopping... ensuring resources are released.")
         if ha_manager:

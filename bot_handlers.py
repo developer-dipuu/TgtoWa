@@ -17,7 +17,8 @@ from telethon.errors.rpcerrorlist import UserNotParticipantError, MessageDeleteF
 from telethon.events import StopPropagation
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.functions.messages import SendReactionRequest, GetCustomEmojiDocumentsRequest
-from telethon.tl.types import MessageEntityCustomEmoji, DocumentAttributeSticker, DocumentAttributeCustomEmoji, Message, ReactionEmoji 
+from telethon.tl.types import MessageEntityCustomEmoji, DocumentAttributeSticker, DocumentAttributeCustomEmoji, Message, ReactionEmoji, User
+from telethon.extensions import html as telethon_html
 from typing import Optional, Sequence, List, Dict, Any
 
 from config import *
@@ -65,6 +66,10 @@ class BotHandlers:
         self.START_MESSAGE = START_MESSAGE_FORMAT.format(
             bot_username=self.bot_username,
         )
+        self.START_BUTTONS = [
+            [Button.inline("Premium", b"premium", style="danger", icon=5967522716062847679), Button.inline("Help", b"help", style="success", icon=5818947586702184246)],
+            [Button.url("Support Group", SUPPORT_GROUP_LINK, style="primary", icon=5895457880710058528), Button.inline("Commands", b"commands", style="primary", icon=5787544344906959608)]
+        ]
         #background tasks for cleanup
         asyncio.create_task(self._reply_locks_cleanup_loop(ttl_seconds=3600))
         asyncio.create_task(self._db_cleanup_loop())
@@ -302,16 +307,16 @@ class BotHandlers:
 
             # First Button in Row
             name1, link1 = REQUIRED_CHANNELS_FORMATTED[i][:2]
-            row.append(Button.url(f"{name1}", url=link1))
+            row.append(Button.url(f"{name1}", url=link1, style="primary", icon=None))
 
             # Second Button in Row (if it exists)
             if i + 1 < len(REQUIRED_CHANNELS_FORMATTED):
                 name2, link2 = REQUIRED_CHANNELS_FORMATTED[i+1][:2]
-                row.append(Button.url(f"{name2}", url=link2))
+                row.append(Button.url(f"{name2}", url=link2, style="primary", icon=None))
             
             keyboard.append(row)
         
-        keyboard.append([Button.inline("✅ Check Again", b"check_membership")])
+        keyboard.append([Button.inline("Check Again", b"check_membership", style="success", icon=5258200019495821936)])
         return keyboard
     
     async def react(self, event: events.NewMessage.Event| None = None, chat_id: int | None = None, msg_id: int | None = None, emoji: str = "👍", big: bool = False) -> bool:
@@ -513,9 +518,10 @@ class BotHandlers:
                 pack_input = extract_pack_name_from_url(event.text)
                 if not pack_input:
                     await event.reply(
-                        "❌ **Invalid input!**\n\n"
+                        "<tg-emoji emoji-id='5465665476971471368'>❌</tg-emoji> <b>Invalid input!</b>\n\n"
                         "Please send a valid Telegram sticker or emoji pack link, "
-                        "or forward a sticker/emoji from the pack you want to convert."
+                        "or forward a sticker/emoji from the pack you want to convert.",
+                        parse_mode="html"
                     )
 
         elif event.sticker:
@@ -527,14 +533,16 @@ class BotHandlers:
             
             if not pack_input:
                 await event.reply(
-                    "❌ This sticker doesn't seem to belong to a pack I can access.\n\nPlease forward a sticker from a public sticker pack."
+                    "<tg-emoji emoji-id='5465665476971471368'>❌</tg-emoji> This sticker doesn't seem to belong to a pack I can access.\n\nPlease forward a sticker from a public sticker pack.",
+                    parse_mode="html"
                 )
         else:
             # if not a text or sticker
             await event.reply(
-                    "❌ **Invalid input!**\n\n"
+                    "<tg-emoji emoji-id='5465665476971471368'>❌</tg-emoji> <b>Invalid input!</b>\n\n"
                     "Please send a valid Telegram sticker or emoji pack link, "
-                    "or forward a sticker/emoji from the pack you want to convert."
+                    "or forward a sticker/emoji from the pack you want to convert.",
+                    parse_mode="html"
                 )
 
         return pack_input
@@ -552,45 +560,42 @@ class BotHandlers:
         message = ""
         match command:
             case 'start':
-                message = "👋 Hey there, I'm here to help you convert Telegram stickers and emoji packs to WhatsApp stickers!\n\nClick the button below to get started."
+                message = "<tg-emoji emoji-id='5413694143601842851'>👋</tg-emoji> Hey there, I'm here to help you convert Telegram stickers and emoji packs to WhatsApp stickers!\n\nClick the button below to get started."
                 buttons = [
-                    [Button.url("Get Started", deep_link)]
+                    [Button.url("Get Started", deep_link, style="primary", icon=5793933761594789855)]
                 ]
             case 'queue':
-                message = "This command is not available in groups.\n\nPlease click the button below to see your queue position in private chat."
+                message = "<tg-emoji emoji-id='5305381957524272531'>❌</tg-emoji> This command is not available in groups.\n\nPlease click the button below to see your queue position in private chat."
                 buttons = [
-                    [Button.url("⏳ Get Queue Position", deep_link)]
+                    [Button.url("Get Queue Position", deep_link, style="primary", icon=5258513401784573443)]
                 ]
             case 'mystats':
-                message = "This command is not available in groups.\n\nPlease click the button below to see your stats in private chat."
+                message = "<tg-emoji emoji-id='5305381957524272531'>❌</tg-emoji> This command is not available in groups.\n\nPlease click the button below to see your stats in private chat."
                 buttons = [
-                    [Button.url("📊 Get My Stats", deep_link)]
+                    [Button.url("Get My Stats", deep_link, style="primary", icon=5431577498364158238)]
                 ]
             case 'premium':
-                message = "This command is not available in groups.\n\nPlease click the button below to see premium info in private chat."
+                message = "<tg-emoji emoji-id='5305381957524272531'>❌</tg-emoji> This command is not available in groups.\n\nPlease click the button below to see premium info in private chat."
                 buttons = [
-                    [Button.url("🌟 Premium Info", deep_link)]
+                    [Button.url("Premium Info", deep_link, style="primary", icon=5967522716062847679)]
                 ]
             case 'commands':
-                message = "This command is not available in groups.\n\nPlease click the button below to see available commands in private chat."
+                message = "<tg-emoji emoji-id='5305381957524272531'>❌</tg-emoji> This command is not available in groups.\n\nPlease click the button below to see available commands in private chat."
                 buttons = [
-                    [Button.url("⚙️ Available Commands", deep_link)]
+                    [Button.url("Available Commands", deep_link, style="primary", icon=5787544344906959608)]
                 ]
             case 'contact':
-                message = "This command is not available in groups.\n\nPlease click the button below to use it in private chat."
+                message = "<tg-emoji emoji-id='5305381957524272531'>❌</tg-emoji> This command is not available in groups.\n\nPlease click the button below to use it in private chat."
                 buttons = [
-                    [Button.url("💬 Contact", deep_link)]
+                    [Button.url("Contact", deep_link, style="primary", icon=5895457880710058528)]
                 ]
             case _:
-                message = "This command is not available in groups.\n\nPlease click the button below to use it in private chat."
+                message = "<tg-emoji emoji-id='5305381957524272531'>❌</tg-emoji> This command is not available in groups.\n\nPlease click the button below to use it in private chat."
                 buttons = [
-                    [Button.url("📨 Continue in DM", deep_link)]
+                    [Button.url("Continue in DM", deep_link, style="primary", icon=5793933761594789855)]
                 ]
         
-        await event.reply(
-            message,
-            buttons=buttons
-        )
+        await event.reply(message, buttons=buttons, parse_mode="html")
 
         raise StopPropagation
 
@@ -620,7 +625,7 @@ class BotHandlers:
                 if log_id is None:
                     log_id = await db.log_conversion_request(user_id, set_id, pack_url, is_emoji_pack)
                 
-                await self.client.send_message(chat_id, f"✅ Found this pack in the cache! Sending **{num_packs}** file(s) instantly...", reply_to=msg_to_reply_id)
+                await self.client.send_message(chat_id, f"<tg-emoji emoji-id='5456140674028019486'>⚡️</tg-emoji> Found this pack in the cache! Sending <b>{num_packs}</b> {'file' if num_packs == 1 else 'files'} instantly...", reply_to=msg_to_reply_id, parse_mode="html")
 
                 try:
                     messages = await self.client.get_messages(channel_id, ids=message_ids)
@@ -628,7 +633,7 @@ class BotHandlers:
                         await self.client.send_message(entity=chat_id, message=message, link_preview=False)
 
                     logger.info(f"✅ Successfully forwarded pack {set_id} from cache to user {user_id}.")
-                    await self.client.send_message(chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
+                    await self.client.send_message(chat_id, "<tg-emoji emoji-id='5872922883092648417'>📱</tg-emoji> To import to WhatsApp, use '<b>Sticker Maker</b>' app on your phone (/help for more info). Enjoy!", parse_mode="html")
                     await db.update_conversion_log(log_id, "completed_from_cache", datetime.now(timezone.utc), 0.0)
                     return True
                 except UserIsBlockedError:
@@ -640,7 +645,7 @@ class BotHandlers:
                 except Exception as e:
                     logger.error(f"Failed to forward cached messages for pack {set_id} to user {user_id}: {e}")
                     # If forwarding fails, it's a critical error. Let's treat it as a cache miss and re-convert.
-                    await self.client.send_message(chat_id, "🤔 Oops! I found this in the cache, but couldn't send it. I'll try re-converting it for you now.", reply_to=msg_to_reply_id)
+                    await self.client.send_message(chat_id, "Oops! I found this in the cache, but couldn't send it. I'll try re-converting it for you now. <tg-emoji emoji-id='5384307092599348179'>🫡</tg-emoji>", reply_to=msg_to_reply_id)
                     await db.update_conversion_log(log_id, "failed_forward_from_cache", datetime.now(timezone.utc), 0.0)
                     # clear the broken cache
                     asyncio.create_task(self.delete_cache(set_id))
@@ -712,9 +717,9 @@ class BotHandlers:
             ))
 
         text = (
-            "🤔 **Multiple Actions Pending**\n\n"
+            "<tg-emoji emoji-id='5472248119942979457'>🤔</tg-emoji> <b>Multiple Actions Pending</b>\n\n"
             "You have several actions waiting for your text input. "
-            "To continue, please **scroll up and reply directly** to the correct prompt message.\n\n"
+            "To continue, please <b>scroll up and reply directly</b> to the correct prompt message or <b>cancel other actions</b> using the buttons below.\n\n"
             "Here are your pending actions:"
         )
         
@@ -726,22 +731,30 @@ class BotHandlers:
             sid = session.session_id
 
             action_desc = "Unknown Action"
+            button_text = ""
             if flow == Flow.CUSTOMIZE:
                 pack_title = payload['sticker_set_info']['title']
+                safe_pack_title = pack_title[:15] + "..." if len(pack_title) > 15 else pack_title
                 if session.state == 'awaiting_custom_title':
-                    action_desc = f"✏️ Set Title for '{pack_title[:20]}...'"
+                    action_desc = f"<tg-emoji emoji-id='5258215635996908355'>✏️</tg-emoji> Set Title for '{html.escape(safe_pack_title)}'"
+                    button_text = f"Set Title for '{safe_pack_title}'"
                 elif session.state == 'awaiting_custom_author':
-                    action_desc = f"👤 Set Author for '{pack_title[:20]}...'"
+                    action_desc = f"<tg-emoji emoji-id='5258011929993026890'>👤</tg-emoji> Set Author for '{html.escape(safe_pack_title)}'"
+                    button_text = f"Set Author for '{safe_pack_title}'"
             elif flow == Flow.CONTACT:
-                action_desc = "✉️ Send Contact Message"
+                action_desc = "<tg-emoji emoji-id='5260535596941582167'>✉️</tg-emoji> Send Contact Message"
+                button_text = "Send Contact Message"
+            elif flow == Flow.ADDCACHE:
+                action_desc = "<tg-emoji emoji-id='5258108352008823107'>➕️</tg-emoji> Add Cache Interactive"
+                button_text = "Add Cache Interactive"
 
-            action_list.append(f"• {action_desc}")
-            buttons.append([Button.inline(f"❌ Cancel: {action_desc}", f"cancel_session_{flow.value}_{sid}")])
+            action_list.append(f"{action_desc}")
+            buttons.append([Button.inline(f"Cancel: {button_text}", f"cancel_session_{flow.value}_{sid}", style="danger", icon=5260342697075416641)])
         
-        buttons.append([Button.inline("🚫 Cancel All Pending Actions", "cancel_all_input_sessions")])
+        buttons.append([Button.inline("Cancel All Pending Actions", "cancel_all_input_sessions", style="danger", icon=5267123797600783095)])
     
         full_text = text + "\n" + "\n".join(action_list)
-        prompt_msg = await event.respond(full_text, buttons=buttons)
+        prompt_msg = await event.respond(full_text, buttons=buttons, parse_mode="html")
 
         prompt_id = prompt_msg.id
         
@@ -790,7 +803,7 @@ class BotHandlers:
 
             user = await event.get_sender()
             user_display_name = get_user_display_name(user)
-            role = "⭐ Premium User" if await db.is_premium(user.id) else "👤 Regular User"
+            role = "<tg-emoji emoji-id='5258165702707125574'>⭐</tg-emoji> Premium User" if await db.is_premium(user.id) else "<tg-emoji emoji-id='5316727448644103237'>👤</tg-emoji> Regular User"
             stats = await db.get_user_stats(user.id)
 
             header_message = CONTACT_ADMIN_NOTIFICATION_HEADER.format(
@@ -804,15 +817,20 @@ class BotHandlers:
                 total=stats['total']
             )
 
+            single_success = False
             for admin_id in admin_ids:
                 try:
                     await self.client.send_message(admin_id, header_message, parse_mode='html')
                     await self.client.forward_messages(admin_id, event.message)
+                    single_success = True
                     logger.debug(f"Forwarded the {user.id} user's contact message to the admin {admin_id}")
                 except Exception as e:
                     logger.warning(f"Failed to forward contact message to admin {admin_id}: {e}")
-
-            await event.reply(CONTACT_SUCCESS_MESSAGE, parse_mode='html')
+            
+            if single_success:
+                await event.reply(CONTACT_SUCCESS_MESSAGE, parse_mode='html')
+            else:
+                await event.reply(CONTACT_FAILURE_MESSAGE, parse_mode='html')
             raise StopPropagation
 
         # --- CUSTOMIZATION INPUT ---
@@ -821,7 +839,7 @@ class BotHandlers:
 
             if not event.text or not event.text.strip():
                 await event.delete()
-                msg = await event.respond("⚠️ Only valid **text messages** are allowed. Please try again.")
+                msg = await event.respond("<tg-emoji emoji-id='5915991028430542030'>⚠️</tg-emoji> Only valid <b>text messages</b> are allowed. Please try again.", parse_mode='html')
                 await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id,
                                                  payload_mutator=lambda p: p.setdefault('failed_inputs', []).append(msg.id))
                 return
@@ -831,7 +849,7 @@ class BotHandlers:
             if session.state == 'awaiting_custom_title':
                 if len(user_input) > 50:
                     await event.delete()
-                    msg = await event.respond("⚠️ Title too long (max 50 chars). Please try again.")
+                    msg = await event.respond("<tg-emoji emoji-id='5915991028430542030'>⚠️</tg-emoji> Title too long (max 50 chars). Please try again.", parse_mode='html')
                     await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, 
                                                  payload_mutator=lambda p: p.setdefault('failed_inputs', []).append(msg.id))
                     return
@@ -840,7 +858,7 @@ class BotHandlers:
             elif session.state == 'awaiting_custom_author':
                 if len(user_input) > 30:
                     await event.delete()
-                    msg = await event.respond("⚠️ Author too long (max 30 chars). Please try again.")
+                    msg = await event.respond("<tg-emoji emoji-id='5915991028430542030'>⚠️</tg-emoji> Author name too long (max 30 chars). Please try again.", parse_mode='html')
                     await session_manager.update(user_id, Flow.CUSTOMIZE, session.session_id, 
                                                  payload_mutator=lambda p: p.setdefault('failed_inputs', []).append(msg.id))
                     return
@@ -876,7 +894,7 @@ class BotHandlers:
         try:
             sticker_set = await self.network_task.get_sticker_set(pack_input)
             if not sticker_set or not sticker_set.documents:
-                await event.reply("❌ Couldn't find that sticker pack. It might be private or empty.")
+                await event.reply("<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> Couldn't find that sticker pack. It might be private or empty.", parse_mode='html')
                 return
 
             # Perform a silent cache check
@@ -890,7 +908,7 @@ class BotHandlers:
                 messages = await self.client.get_messages(channel_id, ids=message_ids)
                 if messages and all(msg is not None for msg in messages):
                     await db.record_cache_hit(set_id, is_system_process=True)
-                    await event.reply(f"✅ Pack '{set_title}' is already in the cache. Skipped.")
+                    await event.reply(f"<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Pack '<code>{set_title}</code>' is already in the cache. Skipped.", parse_mode='html')
                     return
                 else:
                     asyncio.create_task(self.delete_cache(set_id)) # Inconsistent cache
@@ -898,7 +916,7 @@ class BotHandlers:
                 asyncio.create_task(self.delete_cache(set_id))
             
             # Queue it
-            placeholder = await event.reply(f"✅ Adding '{set_title}' to the queue...")
+            placeholder = await event.reply(f"<tg-emoji emoji-id='5787344001862471785'>⏳</tg-emoji> Adding '<code>{set_title}</code>' to the queue...", parse_mode='html')
             system_id = SYSTEM_USER_ID
 
             is_emoji = sticker_set.set.emojis
@@ -916,7 +934,7 @@ class BotHandlers:
                 is_silent_mode=True
             )
             self.active_add_jobs.add(log_id)
-            await placeholder.edit(f"✅ Queued `{set_title}` for caching at position {position}.")
+            await placeholder.edit(f"<tg-emoji emoji-id='6296577138615125756'>✅</tg-emoji> Queued '<code>{set_title}</code>' for caching at position {position}.", parse_mode='html')
             
             if not self.processing_lock.locked():
                 queue_stats = await queue_manager.get_queue_stats()
@@ -924,7 +942,7 @@ class BotHandlers:
                     asyncio.create_task(self.process_queue())
 
         except Exception as e:
-            await event.reply(f"❌ An error occurred: {e}")
+            await event.reply(f"<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> An error occurred: {e}", parse_mode='html')
             logger.error(f"Interactive AddCache Error: {e}", exc_info=True)
 
     async def _start_customization_flow(self, event_info: dict, sticker_set_info: dict):
@@ -958,18 +976,18 @@ class BotHandlers:
         author = html.escape(payload['custom_author'] or self.bot_username)
         
         text = (
-            f"✨ <b>Premium Customization</b> ✨\n\n"
+            f"<tg-emoji emoji-id='5947363097353130662'>✨</tg-emoji> <b>Premium Customization</b> <tg-emoji emoji-id='5947363097353130662'>✨</tg-emoji>\n\n"
             f"Here's the current setup for your pack:\n"
-            f"<blockquote>- <b>Title</b>: <code>{title}</code></blockquote>\n"
-            f"<blockquote>- <b>Author</b>: <code>{author}</code></blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5258215635996908355'>✏️</tg-emoji> <b>Title</b>: <code>{title}</code></blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5258011929993026890'>👤</tg-emoji> <b>Author</b>: <code>{author}</code></blockquote>\n"
             f"Ready to go, or want to make a change?"
         )
         
         sid = session.session_id
         buttons = [
-            [Button.inline("✏️ Set Title", f"customize_title_{sid}"), Button.inline("👤 Set Author", f"customize_author_{sid}")],
-            [Button.inline("🚀 Convert Now", f"customize_convert_{sid}")],
-            [Button.inline("❌ Cancel", f"customize_cancel_{sid}")]
+            [Button.inline("Set Title", f"customize_title_{sid}", style="primary", icon=5258215635996908355), Button.inline("Set Author", f"customize_author_{sid}", style="primary", icon=5258011929993026890)],
+            [Button.inline("Convert Now", f"customize_convert_{sid}", style="success", icon=5260416304224936047)],
+            [Button.inline("Cancel", f"customize_cancel_{sid}", style="danger", icon=5260342697075416641)]
         ]
         
         try:
@@ -1008,13 +1026,14 @@ class BotHandlers:
                 await self.client.send_message(
                     entity=event_info['chat_id'],
                     message = (
-                        "😟 **Pack Too Large for Regular Users!**\n\n"
-                        f"This pack is estimated to take more than **{MAX_CONVERSION_SECONDS_REGULAR // 60} minutes** to convert, "
+                        "<tg-emoji emoji-id='5228947933545635555'>😟</tg-emoji> <b>Pack Too Large for Regular Users!</b>\n\n"
+                        f"This pack is estimated to take more than <b>{MAX_CONVERSION_SECONDS_REGULAR // 60} minutes</b> to convert, "
                         "which exceeds the time limit for regular users.\n\n"
-                        "Upgrade to **Premium** to convert larger packs instantly!\n"
+                        "Upgrade to <b>Premium</b> to convert larger packs instantly!\n"
                     ),
-                    buttons=[[Button.inline("💎 Learn about Premium", b"premium")]],
-                    reply_to=event_info['message_id']
+                    buttons=[[Button.inline("Learn about Premium", b"premium", style="primary", icon=5967522716062847679)]],
+                    reply_to=event_info['message_id'],
+                    parse_mode='html'
                 )
                 return
         set_id = sticker_set_info['set_id']
@@ -1033,7 +1052,7 @@ class BotHandlers:
         await db.increment_daily_requests(user.id)
 
         # send adding to queue message
-        placeholder_message = await self.client.send_message(entity=event_info['chat_id'], message="⌛ Adding to the queue...", reply_to=event_info['message_id'])
+        placeholder_message = await self.client.send_message(entity=event_info['chat_id'], message="<tg-emoji emoji-id='5220046725493828505'>⌛</tg-emoji> Adding to the queue...", reply_to=event_info['message_id'], parse_mode='html')
 
         # Determine if this pack is "cache suspicious"
         is_suspicious = not custom_title and not custom_author and self.cache_enabled and await queue_manager.is_set_id_queued(set_id)
@@ -1062,16 +1081,17 @@ class BotHandlers:
             if is_premium:
                 current_queue_count = await queue_manager.get_user_queue_count(user.id)
                 slots_left = MAX_CONCURRENT_PREMIUM_REQUESTS - current_queue_count
-                final_message_text = (f"<b>⭐ VIP Status Confirmed!</b>\n\n"
-            f"Your pack: <b><a href=\"{pack_url}\">{safe_pack_name}</a></b> has been fast-tracked to position <b>{position}</b>.\n")
+                final_message_text = (f"<b><tg-emoji emoji-id='6080171114007367607'>⭐</tg-emoji> VIP Status Confirmed!</b>\n\n"
+            f"Your pack: <b><a href=\"{pack_url}\">{safe_pack_name}</a></b> has been fast-tracked to position <b>{position}</b>.<tg-emoji emoji-id='5188481279963715781'>🚀</tg-emoji>\n")
 
                 if slots_left > 0:
                     final_message_text += f"<blockquote>As a premium user, you can still add <b>{slots_left}</b> more pack(s) to the queue. Keep 'em coming!</blockquote>\n"
 
                 final_message_text += "\n<b>I'll notify you when the conversion starts!</b>"
             else:
-                final_message_text = (f"<b>✅ Added to conversion queue!</b>\n\n"
-                f"📦 Pack: <a href=\"{pack_url}\">{safe_pack_name}</a>\n📍 Position: {position}\n\n"
+                final_message_text = (f"<b><tg-emoji emoji-id='6296367896398399651'>✅</tg-emoji> Added to conversion queue!</b>\n\n"
+                f"<tg-emoji emoji-id='5785045099142450328'>📦</tg-emoji> Pack: <a href=\"{pack_url}\">{safe_pack_name}</a>\n"
+                f"<tg-emoji emoji-id='5821128296217185461'>📍</tg-emoji> Position: {position}\n\n"
                 f"<blockquote>I'll notify you when the conversion starts!</blockquote>")
 
             # finally edit the message with detailed one
@@ -1079,7 +1099,7 @@ class BotHandlers:
                 entity=placeholder_message.chat_id,
                 message=placeholder_message.id,
                 text=final_message_text,
-                buttons=[[Button.inline("📊 Check Queue", b"check_queue")],[Button.inline("❌ Cancel", data=f"cancel_item_{log_id}".encode())]],
+                buttons=[[Button.inline("Check Queue", b"check_queue", style="primary", icon=5258513401784573443)],[Button.inline("Cancel", data=f"cancel_item_{log_id}".encode(), style="danger", icon=5260342697075416641)]],
                 link_preview=False, parse_mode='html'
             )
 
@@ -1125,7 +1145,7 @@ class BotHandlers:
 
         if event.is_reply and len(active_sessions_with_flow) >= 1:
             # user replied to a wrong message or expired session
-            await event.reply("The messsage you replied to is not a valid input action or has expired.")
+            await event.reply("<tg-emoji emoji-id='5915991028430542030'>❌</tg-emoji> The messsage you replied to is not a valid input action or has expired.", parse_mode='html')
             return
         
         if len(active_sessions_with_flow) == 1: # single input session
@@ -1153,16 +1173,16 @@ class BotHandlers:
             current_daily_usage = await db.get_daily_usage(user.id)
             if current_daily_usage >= daily_limit:
                 message = (
-                    f"🚫 **Daily Limit Reached!**\n\n"
-                    f"You have used your quota of **{current_daily_usage}/{daily_limit}** conversions for today. "
+                    f"<tg-emoji emoji-id='5418159410646099061'>🚫</tg-emoji> <b>Daily Limit Reached!</b>\n\n"
+                    f"You have used your quota of <b>{current_daily_usage}/{daily_limit}</b> conversions for today. "
                     "Your limit will reset at midnight (UTC)."
                 )
                 buttons = None
                 if not is_premium:
-                    message += f"\n\nConsider upgrading to /premium for higher limits! Plans start from just **${PREMIUM_PRICE_MONTHLY}**/month."
-                    buttons = [[Button.inline("💎 Learn about Premium", b"premium")]]
+                    message += f"\n\nConsider upgrading to <b>Premium</b> for higher limits! Plans start from just <b>${PREMIUM_PRICE_MONTHLY}</b>/month."
+                    buttons = [[Button.inline("Learn about Premium", b"premium", style="primary", icon=5967522716062847679)]]
                 
-                await event.reply(message, buttons=buttons)
+                await event.reply(message, buttons=buttons, parse_mode='html')
                 return
         
         limit = MAX_CONCURRENT_PREMIUM_REQUESTS if is_premium else MAX_CONCURRENT_REGULAR_REQUESTS
@@ -1173,14 +1193,19 @@ class BotHandlers:
             current_queue_count = await queue_manager.get_user_queue_count(user.id)
             realistic_position = current_queue_count + (1 if user.id in self._users_adding_to_queue else 0)
             if realistic_position >= limit:
+                buttons = None
                 if is_premium:
-                    message = (f"⏳ **You've reached your limit!**\n\n"
-                            f"You currently have {realistic_position}/{limit} items in the queue. "
+                    message = (f"<tg-emoji emoji-id='5915991028430542030'>🚫</tg-emoji> <b>You've reached your limit!</b>\n\n"
+                            f"You currently have <b>{realistic_position}/{limit}</b> items in the queue. "
                             f"Please wait for one to complete before adding more.")
+                    buttons = [[Button.inline("Check Queue", b"check_queue", style="primary", icon=5258513401784573443)]]
                 else:
-                    message = "⏳ You're already in the queue! Please wait for your current request to complete."
+                    message = (f"<tg-emoji emoji-id='5915991028430542030'>🚫</tg-emoji> You're already in the queue! Please wait for your current request to complete."
+                            f"\n\nUpgrade to <b>Premium</b> to convert multiple packs <b>at the same time</b>!")
+                    buttons = [[Button.inline("Check Queue", b"check_queue", style="primary", icon=5258513401784573443), 
+                                Button.inline("Learn about Premium", b"premium", style="success", icon=5967522716062847679)]]
 
-                asyncio.create_task(self._safe_reply(event, message, buttons=[[Button.inline("📊 Check Queue", b"check_queue")]]))
+                asyncio.create_task(self._safe_reply(event, message, buttons=buttons, parse_mode='html'))
                 return
             
             # if check passes mark user as adding to queue
@@ -1197,11 +1222,14 @@ class BotHandlers:
 
                 if not sticker_set or not sticker_set.documents:
                     logger.error(f"Could not fetch a valid sticker set for input: {pack_input}")
-                    await event.reply("❌ I couldn't find that sticker pack. It might be private, invalid, or empty. Please try another one!")
+                    await event.reply("<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> I couldn't find that sticker pack. It might be private, invalid, or empty. Please try another one!", parse_mode='html')
                     return
 
             except Exception as e:
                     logger.error(f"Error fetching set name for user {user.id}: {e}")
+                    await event.reply("<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> An error occured while fetching the sticker pack. Please try again later!", parse_mode='html')
+                    return
+                    
             sticker_set_doc_mime_type = [doc.mime_type for doc in sticker_set.documents]
             sticker_set_info = {"set_id": sticker_set.set.id, "access_hash": sticker_set.set.access_hash, "short_name": sticker_set.set.short_name, "is_emoji": sticker_set.set.emojis, "doc_info": sticker_set_doc_mime_type, "title": sticker_set.set.title, }
             if is_premium:
@@ -1232,16 +1260,18 @@ class BotHandlers:
                 await self.client.edit_message(
                     entity=item.chat_id,
                     message=item.bot_reply_message_id,
-                    text=f"⌛ Your request for the pack is now processing...",
-                    buttons=None
+                    text=f"<tg-emoji emoji-id='5454074580010295588'>⌛</tg-emoji> Your request for the pack is now processing...",
+                    buttons=None,
+                    parse_mode='html'
                 )
             except Exception as e:
                 logger.warning(f"Could not edit message {item.bot_reply_message_id} to remove cancel button: {e}")
 
             status_message = await self.client.send_message(
                 item.chat_id,
-                "🚀 Starting conversion for your pack...\n"
-                "🤔 Estimated time: `Calculating...`"
+                "<tg-emoji emoji-id='5188481279963715781'>🚀</tg-emoji> Starting conversion for your pack...\n"
+                "<tg-emoji emoji-id='5382194935057372936'>🤔</tg-emoji> Estimated time: Calculating...",
+                parse_mode='html'
             )
         # sticker info
         sticker_set = None
@@ -1277,18 +1307,19 @@ class BotHandlers:
             await self.client.edit_message(
                 entity=item.chat_id,
                 message=status_message.id,
-                text=f"🚀 Starting conversion for your pack...\n"
-                    f"🤔 Estimated time: {estimated_time_str}"
+                text=f"<tg-emoji emoji-id='5188481279963715781'>🚀</tg-emoji> Starting conversion for your pack...\n"
+                    f"<tg-emoji emoji-id='5382194935057372936'>🤔</tg-emoji> Estimated time: {estimated_time_str}",
+                parse_mode='html'
             )
             
             item_name = "emojis" if is_emoji_pack else "stickers"
-            message = (f"📊 <b>Pack Details:</b>\n"
-                    f"• Name: <a href=\"{pack_url}\">{safe_pack_title}</a>\n"
-                    f"• Total {item_name}: {total_stickers}\n"
-                    f"• This will create {num_packs} .wastickers file(s).")
+            message = (f"<tg-emoji emoji-id='5339166917598916047'>📊</tg-emoji> <b>Pack Details:</b>\n"
+                    f"<tg-emoji emoji-id='5787399776307776752'>◾️</tg-emoji> Name: <a href=\"{pack_url}\">{safe_pack_title}</a>\n"
+                    f"<tg-emoji emoji-id='5787399776307776752'>◾️</tg-emoji> Total {item_name}: {total_stickers}\n"
+                    f"<tg-emoji emoji-id='5787399776307776752'>◾️</tg-emoji> This will create {num_packs} .wastickers {'file' if num_packs == 1 else 'files'}.")
             await self.client.send_message(item.chat_id, message, parse_mode='html', link_preview=False)
 
-        # run the conversion with a timeout (either 60 sec or 2x the estimated time)
+        # run the conversion with a timeout (either 60 sec or 3x the estimated time)
         conversion_start_time = time.monotonic()
         try:
             wastickers_files = await asyncio.wait_for(self.converter.create_wastickers_pack(sticker_set, final_author, custom_title=final_title), timeout=processing_timeout)
@@ -1299,10 +1330,11 @@ class BotHandlers:
                 try:
                     await self.client.send_message(
                         item.chat_id,
-                        (f"⏱️ The conversion for your pack took longer than expected and has timed out.❌\n\n"
+                        (f"<tg-emoji emoji-id='5258113901106580375'>⏱️</tg-emoji> The conversion for your pack <b>took longer than expected</b> and has <b>timed out</b>.<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji>\n\n"
                         f"It is generally due to Telegram server issues.\n"
-                        f"**Please try again after some time or with a different pack.**\n\n"
-                        f"If the problem persists, ping us at **{SUPPORT_GROUP}**")
+                        f"<b>Please try again after some time or with a different pack.</b>\n\n"
+                        f"If the problem persists, ping us at <b>{SUPPORT_GROUP}</b>"),
+                        parse_mode='html'
                     )
                 except Exception as e:
                     logger.warning(f"Could not send timeout message to {item.user_id}: {e}")
@@ -1317,9 +1349,10 @@ class BotHandlers:
                 try:
                     await self.client.send_message(
                         item.chat_id,
-                        (f"❌ The conversion for your pack has failed.\n"
+                        (f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> The conversion for your pack has failed.\n"
                         f"Please try again later or with a different pack.\n\n"
-                        f"If the problem persists, ping us at **{SUPPORT_GROUP}**")
+                        f"If the problem persists, ping us at <b>{SUPPORT_GROUP}</b>"),
+                        parse_mode='html'
                     )
                 except Exception as e:
                     logger.warning(f"Could not send timeout message to {item.user_id}: {e}")
@@ -1331,7 +1364,7 @@ class BotHandlers:
         if not wastickers_files:
             status_for_db = "failed_no_wasticker_file"
             if not is_silent_mode:
-                await self.client.send_message(item.chat_id, f"❌ Failed to convert the pack <b><a href=\"{pack_url}\">{safe_pack_title}</a></b>. If the problem persists, ping us at <b>{SUPPORT_GROUP}</b>", link_preview=False, parse_mode='html')
+                await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Failed to convert the pack <b><a href=\"{pack_url}\">{safe_pack_title}</a></b>. \nIf the problem persists, ping us at <b>{SUPPORT_GROUP}</b>", link_preview=False, parse_mode='html')
             # This is a failure so we raise an exception.
             user = await self.client.get_entity(item.user_id)
             user_display_name =get_user_display_name(user)
@@ -1365,7 +1398,7 @@ class BotHandlers:
             and (target_cache_channel:= await self.get_cache_channel())
         ):
             if not is_silent_mode:
-                await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
+                await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='6080182302397174299'>✅</tg-emoji> Conversion complete! Sending <b>{len(wastickers_files)}</b> {'file' if len(wastickers_files) == 1 else 'files'}...", link_preview=False, parse_mode='html')
             
             all_uploads_succeeded = True
             try:
@@ -1390,9 +1423,9 @@ class BotHandlers:
                 # reporting to user
                 if not is_silent_mode:
                     if num_packs == 1:
-                        await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
+                        await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Timed out while uploading pack. Please try again later.", parse_mode='html')
                     else:
-                        await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack part {first_failed_index+1}. Please try again later.")
+                        await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Timed out while uploading pack part {first_failed_index+1}. Please try again later.", parse_mode='html')
                 #notify owner
                 user = await self.client.get_entity(item.user_id)
                 user_display_name =get_user_display_name(user)
@@ -1410,13 +1443,13 @@ class BotHandlers:
                 # reporting to user
                 if not is_silent_mode:
                     if num_packs == 1:
-                        await self.client.send_message(item.chat_id, f"❌ Failed to upload pack due to an error. Please use **/contact** to report it to the admins.")
+                        await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Failed to upload pack due to an error. Please use <b>/contact</b> to report it to the admins.", parse_mode='html')
                     else:
-                        await self.client.send_message(item.chat_id, f"❌ Failed to upload pack part {first_failed_index+1} due to an error. Please use **/contact** to report it to the admins.")
+                        await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Failed to upload pack part {first_failed_index+1} due to an error. Please use <b>/contact</b> to report it to the admins.", parse_mode='html')
                 #notify owner
                 user = await self.client.get_entity(item.user_id)
                 user_display_name =get_user_display_name(user)
-                await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadErrorCaching", f"File: {", ".join(failed_uploads)}", sticker_set=sticker_set)
+                await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadErrorCaching", f"File: {', '.join(failed_uploads)}", sticker_set=sticker_set)
             finally:
                 # This ensures temporary .wastickers files are deleted if they weren't cached and moved.
                 for file_path in wastickers_files:
@@ -1435,7 +1468,7 @@ class BotHandlers:
                     for message in cached_messages:
                         await self.client.send_message(entity=item.chat_id, message=message, link_preview=False)
 
-                    await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
+                    await self.client.send_message(item.chat_id, "<tg-emoji emoji-id='5872922883092648417'>📱</tg-emoji> To import to WhatsApp, use an app like '<b>Sticker Maker</b>' on your phone (/help for more info). Enjoy!", parse_mode='html')
                     status_for_db = "completed"
                 except UserIsBlockedError:
                     # some dumbass block the bot even before it sends files
@@ -1443,12 +1476,12 @@ class BotHandlers:
                     logger.error(f"User has blocked the bot! Failed to forward cached messages for pack {sticker_set.set.id,} to user {item.user_id}.")
                 except Exception as e:
                     logger.error(f"Failed to forward newly cached pack {sticker_set.set.id} to user {item.user_id}: {e}")
-                    await self.client.send_message(item.chat_id, "❌ An error occurred while sending your files. Please use **/contact** to report this.")
+                    await self.client.send_message(item.chat_id, "<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> An error occurred while sending your files. Please use <b>/contact</b> to report this.", parse_mode='html')
                     status_for_db = "failed_forward"
 
         else: # caching is off or cache channels full or its a custom premium request
             if not is_silent_mode:
-                await self.client.send_message(item.chat_id, f"✅ Conversion complete! Sending <b>{len(wastickers_files)}</b> file(s)...", link_preview=False, parse_mode='html')
+                await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='6080182302397174299'>✅</tg-emoji> Conversion complete! Sending <b>{len(wastickers_files)}</b> {'file' if len(wastickers_files) == 1 else 'files'}...", link_preview=False, parse_mode='html')
                 
                 all_uploads_succeeded = True
                 try:
@@ -1470,13 +1503,13 @@ class BotHandlers:
                         failed_uploads.append(exc.file_path)
                     # reporting user 
                     if num_packs == 1:
-                        await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack. Please try again later.")
+                        await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Timed out while uploading pack. Please try again later.", parse_mode="html")
                     else:
-                        await self.client.send_message(item.chat_id, f"❌ Timed out while uploading pack part {first_failed_index+1}. Please try again later.")
+                        await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Timed out while uploading pack part {first_failed_index+1}. Please try again later.", parse_mode="html")
                     #notify owner
                     user = await self.client.get_entity(item.user_id)
                     user_display_name =get_user_display_name(user)
-                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadTimeout", f"File: {", ".join(failed_uploads)}", sticker_set=sticker_set)
+                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadTimeout", f"File: {', '.join(failed_uploads)}", sticker_set=sticker_set)
                 except* FileUploadWrapperError as eg_w:
                     status_for_db = "failed_upload_error"
                     all_uploads_succeeded = False
@@ -1489,13 +1522,13 @@ class BotHandlers:
                         failed_uploads.append(exc.file_path)
                     # reporting user
                     if num_packs == 1:
-                        await self.client.send_message(item.chat_id, f"❌ Failed to upload pack due to an error. Please use **/contact** to report it to the admins.")
+                        await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Failed to upload pack due to an error. Please use <b>/contact</b> to report it to the admins.", parse_mode="html")
                     else:
-                        await self.client.send_message(item.chat_id, f"❌ Failed to upload pack part {first_failed_index+1} due to an error. Please use **/contact** to report it to the admins.")
+                        await self.client.send_message(item.chat_id, f"<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Failed to upload pack part {first_failed_index+1} due to an error. Please use <b>/contact</b> to report it to the admins.", parse_mode="html")
                     #notify owner
                     user = await self.client.get_entity(item.user_id)
                     user_display_name =get_user_display_name(user)
-                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadError", f"File: {", ".join(failed_uploads)}", sticker_set=sticker_set)
+                    await self.notification_manager.send_conversion_failure(item.user_id, user_display_name, item.log_id, "UploadError", f"File: {', '.join(failed_uploads)}", sticker_set=sticker_set)
                 finally:
                     # This ensures temporary .wastickers files are deleted if they weren't cached and moved.
                     for file_path in wastickers_files:
@@ -1505,7 +1538,7 @@ class BotHandlers:
 
                 # If all uploads were successful
                 if all_uploads_succeeded:
-                    await self.client.send_message(item.chat_id, "📱 To import to WhatsApp, use an app like '**Sticker Maker**' on your phone (/help for more info). Enjoy!")
+                    await self.client.send_message(item.chat_id, "<tg-emoji emoji-id='5872922883092648417'>📱</tg-emoji> To import to WhatsApp, use an app like '<b>Sticker Maker</b>' on your phone (/help for more info). Enjoy!", parse_mode="html")
                     
         return status_for_db
 
@@ -1525,7 +1558,7 @@ class BotHandlers:
                         # We pass the item's log_id so we don't create a new DB entry
                         if await self.check_cache(item.chat_id, item.user_id, item.message_id, item.sticker_set_info, log_id=item.log_id):
                             logger.info(f"Suspicious item was a cache hit! Skipping conversion.")
-                            await self.client.edit_message(entity=item.chat_id, message=item.bot_reply_message_id, text=f"⚡ The pack you requested was processed instantly from the cache.")
+                            await self.client.edit_message(entity=item.chat_id, message=item.bot_reply_message_id, text=f"<tg-emoji emoji-id='5456140674028019486'>⚡</tg-emoji> The pack you requested was processed instantly from the cache.", parse_mode="html")
                             await queue_manager.complete_processing(item.id, success=True)
                             continue # Success! Move to the next item in the queue.
                     except Exception as e:
@@ -1555,12 +1588,12 @@ class BotHandlers:
                                 if item.log_id in self.active_refresh_jobs:
                                     self.active_refresh_jobs.discard(item.log_id)
                                     if not self.active_refresh_jobs and not self.active_refresh_message:
-                                        await self.client.send_message(OWNER_ID, "✅ **Cache refresh operation complete!**")
+                                        await self.client.send_message(OWNER_ID, "<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Cache refresh operation complete!", parse_mode="html")
                                 
                                 if item.log_id in self.active_add_jobs:
                                     self.active_add_jobs.discard(item.log_id)
                                     if not self.active_add_jobs and not self.active_add_message:
-                                        await self.client.send_message(OWNER_ID, "✅ **Add-to-cache operation complete!**")
+                                        await self.client.send_message(OWNER_ID, "<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Add-to-cache operation complete!", parse_mode="html")
 
                                 continue # Success! Move to the next item in the queue.
                                 
@@ -1601,32 +1634,39 @@ class BotHandlers:
                         # If that was the last job, notify the owner
                         if not self.active_refresh_jobs:
                             logger.info("All cache refresh jobs have been completed.")
-                            await self.client.send_message(OWNER_ID, "✅ **Cache refresh operation complete!**")
+                            await self.client.send_message(OWNER_ID, "<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Cache refresh operation complete!", parse_mode="html")
 
                     if item.log_id in self.active_add_jobs:
                         self.active_add_jobs.discard(item.log_id)
                         # If that was the last job, notify the owner
                         if not self.active_add_jobs and not self.active_add_message:
                             logger.info("All add-cache jobs have been completed.")
-                            await self.client.send_message(OWNER_ID, "✅ **Add-to-cache operation complete!**")
+                            await self.client.send_message(OWNER_ID, "<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Add-to-cache operation complete!", parse_mode="html")
 
 
     async def _get_user_from_event(self, event: events.NewMessage.Event, arg: Optional[str]) -> Optional[object]:
         """Helper to get user from command argument or reply."""
+        entity = None
         if event.reply_to_msg_id and not arg:
             reply_msg = await event.get_reply_message()
-            return await reply_msg.get_sender()
+            entity = await reply_msg.get_sender()
         elif arg:
             try:
                 # Check if it's a numeric ID first
                 if arg.isdigit():
-                    return await self.client.get_entity(int(arg))
+                    entity = await self.client.get_entity(int(arg))
                 else: # Assume it's a username
-                    return await self.client.get_entity(arg)
+                    entity = await self.client.get_entity(arg)
             except Exception:
-                await event.reply("❌ Invalid user ID or username.")
+                await event.reply("<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Invalid user ID or username.", parse_mode="html")
                 return None
-        return None
+        if entity is None:
+            await event.reply("<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Could not find the user.", parse_mode="html")
+            return None
+        elif not isinstance(entity, User) or entity.bot:
+            await event.reply("<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> This is not a valid user.", parse_mode="html")
+            return None
+        return entity
 
     # ------- User commands -----------
 
@@ -1657,18 +1697,14 @@ class BotHandlers:
             elif parameter == 'help':
                 return await self.help_command(event)
         
-        buttons = [
-            [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
-            [Button.url("💬 Support Group", SUPPORT_GROUP_LINK), Button.inline("🤖 Commands", b"commands")]
-        ]
-        await event.reply(self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
+        await event.reply(self.START_MESSAGE, buttons=self.START_BUTTONS, link_preview=False, parse_mode='html')
         raise StopPropagation
 
     @check_banned
     async def help_command(self, event: events.NewMessage.Event):
         """Handle /help command."""
         buttons = [
-            [Button.inline("🏠 Back to Start", b"start"), Button.inline("🤖 Commands", b"commands")]
+            [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.inline("Commands", b"commands", style = "success", icon=5787544344906959608)]
         ]
         await event.reply(HELP_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
         raise StopPropagation
@@ -1680,19 +1716,19 @@ class BotHandlers:
         is_premium = await db.is_premium(user.id)
         
         # user role
-        role = "👤 Regular User"
+        role = "Regular User <tg-emoji emoji-id='5316727448644103237'>👤</tg-emoji>"
         if db.is_owner(user.id):
-            role = "👑 Owner"
+            role = "Owner <tg-emoji emoji-id='5433758796289685818'>👑</tg-emoji>"
         elif await db.is_admin(user.id):
-            role = "👮‍♂️ Admin"
+            role = "Admin <tg-emoji emoji-id='5854973145315806460'>👮</tg-emoji>"
         elif is_premium:
-            role = "⭐ Premium User"
+            role = "Premium User <tg-emoji emoji-id='5967522716062847679'>⭐</tg-emoji>"
             duration_left = await db.get_premium_duration_left(user.id)
             if duration_left:
                 days = duration_left.days
                 hours = duration_left.seconds // 3600
                 minutes = (duration_left.seconds % 3600) // 60
-                role += f"\n⏳ **Expires in**: {days}d {hours}h {minutes}m"
+                role += f"\n<b>Expires in</b>: {days}d {hours}h {minutes}m <tg-emoji emoji-id='5258258882022612173'>⏳</tg-emoji>"
             
         # get conversion stats
         stats = await db.get_user_stats(user.id)
@@ -1701,17 +1737,17 @@ class BotHandlers:
         limit_str = f"{daily_usage}/{daily_limit}" if daily_limit > 0 else "Unlimited"
         
         message = (
-            f"📊 **Your Stats**\n\n"
-            f"**Status**: {role}\n"
-            f"**Today's Usage**: `{limit_str}`\n\n"
-            f"**Conversions Log**:\n"
-            f"  • Total Requests: `{stats['total']}`\n"
-            f"  • ✅ Succeeded: `{stats['succeeded']}`\n"
-            f"  • ❌ Failed: `{stats['failed']}`\n"
-            f"  • 🚫 Cancelled: `{stats['cancelled']}`"
+            f"<tg-emoji emoji-id='5431577498364158238'>📊</tg-emoji> <b>Your Stats</b>\n\n"
+            f"<b>Status:</b> {role}\n"
+            f"<b>Today's Usage:</b> {limit_str}\n\n"
+            f"<b>Conversions Log:</b>\n"
+            f"  • Total Requests: {stats['total']}\n"
+            f"    <tg-emoji emoji-id='6296367896398399651'>✅</tg-emoji> Succeeded: {stats['succeeded']}\n"
+            f"    <tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> Failed: {stats['failed']}\n"
+            f"    <tg-emoji emoji-id='5319112319429523945'>🚫</tg-emoji> Cancelled: {stats['cancelled']}"
         )
         
-        await event.reply(message)
+        await event.reply(message, parse_mode='html')
         logger.info(f"User {user.id} has fetched their stats.")
         raise StopPropagation
 
@@ -1719,12 +1755,12 @@ class BotHandlers:
         """Generates the dynamic premium status message for a user."""
         # Base message with premium benefits
         benefits_message = (
-            f"<b>Premium Benefits Include:</b>\n"
-            f"  • 🚀 <b>Priority Queue:</b> Your requests jump to the front of the line.\n"
-            f"  • 📈 <b>Higher Daily Limit:</b> Convert up to <b>{DAILY_LIMIT_PREMIUM}</b> packs per day (vs. {DAILY_LIMIT_REGULAR} for regular users).\n"
-            f"  • ⚙️ <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.\n"
-            f"  • ✍️ <b>Custom Pack Details:</b> Set your own custom title and author name for your packs.\n"
-            f"  • 💬 <b>Priority Support:</b> Get faster help in the support group."
+            f"<b>Premium Benefits Include:</b>\n\n"
+            f"<blockquote><tg-emoji emoji-id='5188481279963715781'>🚀</tg-emoji> <b>Priority Queue:</b> Your requests jump to the front of the line.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5449683594425410231'>📈</tg-emoji> <b>Higher Daily Limit:</b> Convert up to <b>{DAILY_LIMIT_PREMIUM}</b> packs per day (vs. {DAILY_LIMIT_REGULAR} for regular users).</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5451882707875276247'>⚙️</tg-emoji> <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5370951118698339120'>✍️</tg-emoji> <b>Custom Pack Details:</b> Set your own custom title and author name for your packs.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5443038326535759644'>💬</tg-emoji> <b>Priority Support:</b> Get faster help in the support group.</blockquote>\n"
         )
 
         if await db.is_premium(user_id):
@@ -1733,18 +1769,18 @@ class BotHandlers:
             hours = duration_left.seconds // 3600
             
             status_message = (
-                f"⭐ <b>You have an active Premium subscription!</b>\n"
+                f"<tg-emoji emoji-id='5967522716062847679'>⭐</tg-emoji> <b>You have an active Premium subscription!</b>\n"
                 f"<i>Expires in: {days} days and {hours} hours.</i>\n\n"
             )
         
         else:
             status_message = (
-                f"❌ <b>You are not currently a Premium user.</b>\n\n"
-                f"<b>Upgrade to unlock these great features!</b>\n\n"
+                f"<tg-emoji emoji-id='5472125180799098428'>😕</tg-emoji> <b>You are not a Premium user.</b>\n\n"
+                f"<b>Upgrade to unlock great features!</b>\n\n"
                 f"<b>Pricing:</b>\n"
-                f"  • 💵 <b>${PREMIUM_PRICE_MONTHLY}</b> / month\n"
-                f"  • 💰 <b>${PREMIUM_PRICE_YEARLY}</b> / year (<i>Save over {PREMIUM_SAVINGS_PERCENT}%</i>)\n\n"
-                f"Contact an admin at <b>{SUPPORT_GROUP}</b> to get started.\n\n"
+                f"  <tg-emoji emoji-id='5409048419211682843'>💵</tg-emoji> <b>${PREMIUM_PRICE_MONTHLY}</b> / month\n"
+                f"  <tg-emoji emoji-id='5224257782013769471'>💰</tg-emoji> <b>${PREMIUM_PRICE_YEARLY}</b> / year (<i>Save over {PREMIUM_SAVINGS_PERCENT}%</i>)\n\n"
+                f"<tg-emoji emoji-id='5337239271851960809'>✉️</tg-emoji>Contact an admin at <b>{SUPPORT_GROUP}</b> to get started.\n\n"
             )
         
         return status_message + benefits_message
@@ -1758,8 +1794,8 @@ class BotHandlers:
         
         message_text = await self._get_premium_message_text(user.id)
         buttons = [
-            [Button.url("💬 Contact Admin", SUPPORT_GROUP_LINK)],
-            [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
+            [Button.url("Contact Admin", SUPPORT_GROUP_LINK, style="success", icon=5895457880710058528)],
+            [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.inline("Help", b"help", style = "primary", icon=5818947586702184246)]
         ]
 
         await event.reply(message_text, buttons=buttons, parse_mode='html', link_preview=False)
@@ -1774,29 +1810,29 @@ class BotHandlers:
         total = stats["total_waiting"] + (1 if stats["currently_processing"] else 0)
 
         if position == -1: # user is processing
-            message = "🚀 Your pack is currently being processed! It should be ready soon."
-            buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
+            message = "<tg-emoji emoji-id='5188481279963715781'>🚀</tg-emoji> Your pack is currently being processed! It should be ready soon."
+            buttons = [[Button.inline("Refresh", b"check_queue", style = "primary", icon=5260687119092817530)]]
         elif position > 0: # in queue
             message = QUEUE_CHECK_MESSAGE.format(
                 position=position,
                 total=total
             )
-            buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
+            buttons = [[Button.inline("Refresh", b"check_queue", style = "primary", icon=5260687119092817530)]]
         else: # not in the queue
-            message = f"📊 You're not in the queue. Total in queue: {total}."
+            message = f"<tg-emoji emoji-id='5305381957524272531'>📊</tg-emoji> You're not in the queue. Total in queue: {total}."
             buttons = [
-                [Button.inline("🔄 Refresh", b"check_queue")],
-                [Button.inline("🏠 Back to Start", b"start")]
+                [Button.inline("Refresh", b"check_queue", style = "success", icon=5260687119092817530)],
+                [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909)]
             ]
         
-        await event.reply(message, buttons=buttons)
+        await event.reply(message, buttons=buttons, parse_mode='html')
         raise StopPropagation
     
     @check_banned
     async def commands_command(self, event: events.NewMessage.Event):
         """Handles the /commands command."""
         buttons = [
-            [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
+            [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.inline("Help", b"help", style = "success", icon=5818947586702184246)]
         ]
         await event.reply(COMMANDS_MESSAGE, buttons=buttons, parse_mode='html')
         raise StopPropagation
@@ -1807,16 +1843,16 @@ class BotHandlers:
         packs = self.daily_popular_packs if list_type == 'daily' else self.all_time_popular_packs
         
         if list_type == 'daily':
-            title = "📅 <b>Top 10 Popular Packs (Daily)</b>"
-            button = [Button.inline("🏆 View All-Time Top 50", b"suggest_all_time")]
+            title = "<tg-emoji emoji-id='5251537301154062376'>📅</tg-emoji> <b>Top 10 Popular Packs (Daily)</b>"
+            button = [Button.inline("View All-Time Top 50", b"suggest_all_time", style="primary", icon=5789828777882162072)]
         else: # all_time
-            title = "🏆 <b>Top 50 Popular Packs (All-Time)</b>"
-            button = [Button.inline("📅 View Daily Top 10", b"suggest_daily")]
+            title = "<tg-emoji emoji-id='5789828777882162072'>🏆</tg-emoji> <b>Top 50 Popular Packs (All-Time)</b>"
+            button = [Button.inline("View Daily Top 10", b"suggest_daily", style="primary", icon=5251537301154062376)]
         
         if not packs:
             message = f"{title}\n\n" \
                       "Hmm, I don't have any data for this yet.\n " \
-                      "Check back tomorrow after more packs have been converted! 😊"
+                      "Check back tomorrow after more packs have been converted! <tg-emoji emoji-id='5240426590126490125'>😊</tg-emoji>"
         else:
             pack_list = []
             for i, pack in enumerate(packs, 1):
@@ -1848,9 +1884,9 @@ class BotHandlers:
         )
 
         buttons = [
-            [Button.inline("✉️ Send Message", f"contact_send_{session.session_id}"), 
-            Button.inline("❌ Cancel", f"contact_cancel_{session.session_id}")],
-            [Button.url("💬 Support Group", SUPPORT_GROUP_LINK)]
+            [Button.inline("Send Message", f"contact_send_{session.session_id}", style="success", icon=5253742260054409879), 
+            Button.inline("Cancel", f"contact_cancel_{session.session_id}", style="danger", icon=5465665476971471368)],
+            [Button.url("Support Group", SUPPORT_GROUP_LINK, style="primary", icon=5443038326535759644)]
         ]
         await event.reply(CONTACT_PROMPT_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
         raise StopPropagation
@@ -3254,16 +3290,12 @@ class BotHandlers:
 
             if data == "check_membership":
                 if await self.check_user_membership(user_id):
-                    buttons = [
-                        [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
-                        [Button.url("💬 Support Group", SUPPORT_GROUP_LINK), Button.inline("🤖 Commands", b"commands")]
-                    ]
                     await event.answer("✅ Great! You're now a member.")
-                    await event.edit("✅ Great! You're now a member.\n\n" + self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
+                    await event.edit("<tg-emoji emoji-id='5208541126583136130'>✅</tg-emoji> Great! You're now a member.\n\n" + self.START_MESSAGE, buttons=self.START_BUTTONS, link_preview=False, parse_mode='html')
                 else:
                     try:
                         await event.answer("❌ You still need to join the required channels.")
-                        await event.edit("❌ You still need to join the required channels.\n\n" + CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
+                        await event.edit("<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> You still need to join the required channels.\n\n" + CHANNEL_JOIN_MESSAGE, buttons=self._create_channel_join_buttons(), link_preview=False, parse_mode='html')
                     except Exception as e:
                         logger.warning(f"Could not edit the Join message: {e}")
             
@@ -3274,9 +3306,9 @@ class BotHandlers:
                 if success:
                     await db.update_conversion_log(log_id, "cancelled", datetime.now(timezone.utc), 0.0)
                     await db.decrement_daily_requests(user_id)
-                    await event.edit("✅ Your request has been successfully cancelled.")
+                    await event.edit("<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Your request has been successfully cancelled.", parse_mode="html")
                 else:
-                    await event.edit("❌ Could not cancel. The item may be processing or completed.")
+                    await event.edit("<tg-emoji emoji-id='5980953710157632545'>❌</tg-emoji> Could not cancel. The item may be processing or completed.", parse_mode="html")
 
             elif data == "check_queue":
                 position = await queue_manager.get_queue_position(user_id)
@@ -3284,59 +3316,55 @@ class BotHandlers:
                 total = stats["total_waiting"] + (1 if stats["currently_processing"] else 0)
 
                 if position == -1: # user is processing
-                    message = "🚀 Your pack is currently being processed! It should be ready soon."
-                    buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
+                    message = "<tg-emoji emoji-id='5188481279963715781'>🚀</tg-emoji> Your pack is currently being processed! It should be ready soon."
+                    buttons = [[Button.inline("Refresh", b"check_queue", style = "primary", icon=5260687119092817530)]]
                 elif position > 0: # in queue
                     message = QUEUE_CHECK_MESSAGE.format(
                         position=position,
                         total=total
                     )
-                    buttons = [[Button.inline("🔄 Refresh", b"check_queue")]]
+                    buttons = [[Button.inline("Refresh", b"check_queue", style = "primary", icon=5260687119092817530)]]
                 else: # not in the queue
-                    message = f"📊 You're not in the queue. Total in queue: {total}."
+                    message = f"<tg-emoji emoji-id='5305381957524272531'>📊</tg-emoji> You're not in the queue. Total in queue: {total}."
                     buttons = [
-                        [Button.inline("🔄 Refresh", b"check_queue")],
-                        [Button.inline("🏠 Back to Start", b"start")]
+                        [Button.inline("Refresh", b"check_queue", style = "success", icon=5260687119092817530)],
+                        [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909)]
                     ]
                 try:
                     await event.answer("Refreshed!")
-                    await event.edit(message, buttons=buttons)
+                    await event.edit(message, buttons=buttons,parse_mode='html')
                 except Exception as e:
                     logger.debug(f"Could not edit the check_queue message: {e}")
             
             elif data == "help":
                 await event.answer()
                 buttons = [
-                    [Button.inline("🏠 Back to Start", b"start"), Button.inline("🤖 Commands", b"commands")]
+                    [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.inline("Commands", b"commands", style = "success", icon=5787544344906959608)]
                 ]
                 await event.edit(HELP_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
 
             elif data == "start":
                 await event.answer()
-                buttons = [
-                    [Button.inline("💎 Premium", b"premium"), Button.inline("❓ Help", b"help")],
-                    [Button.url("💬 Support Group", SUPPORT_GROUP_LINK), Button.inline("🤖 Commands", b"commands")]
-                ]
-                await event.edit(self.START_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
+                await event.edit(self.START_MESSAGE, buttons=self.START_BUTTONS, link_preview=False, parse_mode='html')
             
             elif data == "premium":
                 await event.answer()
                 message_text = await self._get_premium_message_text(user_id)
                 buttons = [
-                    [Button.url("💬 Contact Admin", SUPPORT_GROUP_LINK)],
-                    [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
+                    [Button.url("Contact Admin", SUPPORT_GROUP_LINK, style = "success", icon=5895457880710058528)],
+                    [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.inline("Help", b"help", style = "primary", icon=5818947586702184246)]
                 ]
                 await event.edit(message_text, buttons=buttons, parse_mode='html', link_preview=False)
 
             elif data == "commands":
                 await event.answer()
                 buttons = [
-                    [Button.inline("🏠 Back to Start", b"start"), Button.inline("❓ Help", b"help")]
+                    [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.inline("Help", b"help", style = "success", icon=5818947586702184246)]
                 ]
                 await event.edit(COMMANDS_MESSAGE, buttons=buttons, parse_mode='html')
 
             elif data == "contact_cancel_reply":
-                await event.edit("❌ Action cancelled. The reply was not sent.")
+                await event.edit("<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Action cancelled. The reply was not sent.", parse_mode="html")
                 
             elif data.startswith("contact_send_"):
                 await event.answer()
@@ -3347,8 +3375,8 @@ class BotHandlers:
                     # Update the session state to wait for the user's message
                     await session_manager.update(user_id, Flow.CONTACT, sid, state="awaiting_contact_message", ttl_seconds=3600)
                     prompt_message = await event.edit(
-                        "✅ Great! Please send the message you'd like to forward now. You can reply to this message or send a new one.", 
-                        buttons=[Button.inline("❌ Cancel", f"contact_cancel_{sid}")]
+                        "<tg-emoji emoji-id='5319161050128459957'>✅</tg-emoji> Great! Please send the message you'd like to forward now. You can reply to this message or send a new one.", 
+                        buttons=[Button.inline("Cancel", f"contact_cancel_{sid}", style="danger", icon=5465665476971471368)], parse_mode="html"
                     )
                     # Link this message to the session so we can identify replies
                     await session_manager.mark_message(user_id, Flow.CONTACT, sid, event.chat_id, prompt_message.id)
@@ -3363,7 +3391,7 @@ class BotHandlers:
                 if session and session.active:
                     # Expire the session to deactivate it
                     await session_manager.expire(user_id, Flow.CONTACT, sid)
-                    await event.edit("Action cancelled.", buttons=None)
+                    await event.edit("<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Action cancelled.", buttons=None, parse_mode="html")
                 else:
                     await event.edit("This action has expired or already completed.")
 
@@ -3468,7 +3496,7 @@ class BotHandlers:
                     session_active = session and session.active
                         
                     msg = await event.get_message()
-                    text = msg.message
+                    text = telethon_html.unparse(msg.message, msg.entities)
                     text_to_remove = None
                     buttons = msg.buttons
 
@@ -3476,7 +3504,7 @@ class BotHandlers:
                         for btn in row:
                             if btn.data and btn.data.decode() == data:
                                 row.remove(btn)
-                                text_to_remove = btn.text.replace("❌ Cancel: ", "")
+                                text_to_remove = btn.text.replace("Cancel: ", "")
                                 break
                         if not row:
                             buttons.remove(row)
@@ -3486,18 +3514,18 @@ class BotHandlers:
                         await event.answer(f"✅ Cancelled {text_to_remove}")
                         # if only clear all button is there but all actions have been already cleared individually
                         if len(buttons)==1:
-                            await event.edit("✅ All pending actions have been cancelled.")
+                            await event.edit("<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> All pending actions have been cancelled.", parse_mode='html')
                         else:
-                            final_text = text.replace(text_to_remove, "❌ Cancelled", 1)
-                            await event.edit(text=final_text, buttons=buttons)
+                            final_text = text.replace(html.escape(text_to_remove), "<s>Cancelled</s>", 1)
+                            await event.edit(text=final_text, buttons=buttons, parse_mode='html')
                     else:
                         await event.answer("⛔ This action has already expired or been cancelled.")
                         # if only clear all button is there but all actions have been already cleared individually
                         if len(buttons)==1:
-                            await event.edit("✅ All pending actions have been cancelled.")
+                            await event.edit("<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> All pending actions have been cancelled.", parse_mode='html')
                         else:
-                            final_text = text.replace(text_to_remove, " Already expired/cancelled", 1)
-                            await event.edit(text=final_text, buttons=buttons)
+                            final_text = text.replace(html.escape(text_to_remove), "<s>Already expired/cancelled</s>", 1)
+                            await event.edit(text=final_text, buttons=buttons, parse_mode='html')
 
                 except Exception as e:
                     logger.error(f"Error cancelling session from callback: {e}")
@@ -3508,7 +3536,7 @@ class BotHandlers:
                 active_sessions_with_flow = await self._get_active_input_sessions(user_id)
                 
                 if not active_sessions_with_flow:
-                    await event.edit("✅ No pending actions to cancel.")
+                    await event.edit("<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> No pending actions to cancel.", parse_mode='html')
                     return
                     
                 cancelled_count = 0
@@ -3516,7 +3544,7 @@ class BotHandlers:
                     await session_manager.expire(user_id, flow, session.session_id)
                     cancelled_count += 1
                     
-                await event.edit(f"✅ Cancelled {cancelled_count} pending action(s).")
+                await event.edit(f"<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Cancelled {cancelled_count} pending {'action' if cancelled_count==1 else 'actions'}.", parse_mode='html')
 
 
             # gstats command button handlers
@@ -3593,7 +3621,7 @@ class BotHandlers:
 
                 if action == "cancel":
                     del self.pending_actions[action_id]
-                    await event.edit("✅ Action cancelled.")
+                    await event.edit("<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> Action cancelled.", parse_mode="html")
                     return
 
                 # If action is "confirm"
@@ -3760,7 +3788,7 @@ class BotHandlers:
 
                 session = await session_manager.get(user_id, Flow.CUSTOMIZE, sid)
                 if not session or not session.active:
-                    await event.edit("This customization session has expired. Please send the sticker again.", buttons=None)
+                    await event.edit("This customization session has <b>expired</b>. Please send the sticker again.", parse_mode='html')
                     return
                 
                 payload = session.payload
@@ -3768,16 +3796,18 @@ class BotHandlers:
                 if action == "title":
                     await session_manager.update(user_id, Flow.CUSTOMIZE, sid, state='awaiting_custom_title', ttl_seconds=3600)
                     await event.edit(
-                        "Okay, send me the new **title** for your sticker pack (max 50 characters).",
-                        buttons=[[Button.inline("⬅️ Back", f"customize_back_{sid}")]]
+                        "Okay, send me the new <b>title</b> for your sticker pack (max 50 characters).",
+                        buttons=[[Button.inline("Back", f"customize_back_{sid}", style="primary", icon=5877629862306385808)]],
+                        parse_mode='html'
                     )
                     await session_manager.mark_message(user_id, Flow.CUSTOMIZE, sid, event.chat_id, event.message_id)
 
                 elif action == "author":
                     await session_manager.update(user_id, Flow.CUSTOMIZE, sid, state='awaiting_custom_author', ttl_seconds=3600)
                     await event.edit(
-                        "Sure, send me the **author name** you'd like to use (max 30 characters).",
-                        buttons=[[Button.inline("⬅️ Back", f"customize_back_{sid}")]]
+                        "Sure, send me the <b>author name</b> you'd like to use (max 30 characters).",
+                        buttons=[[Button.inline("Back", f"customize_back_{sid}", style="primary", icon=5877629862306385808)]], 
+                        parse_mode='html'
                     )
                     await session_manager.mark_message(user_id, Flow.CUSTOMIZE, sid, event.chat_id, event.message_id)
 
@@ -3788,7 +3818,7 @@ class BotHandlers:
 
                 elif action == "cancel":
                     await session_manager.expire(user_id, Flow.CUSTOMIZE, sid)
-                    await event.edit("❌ Conversion cancelled.", buttons=None)
+                    await event.edit("<tg-emoji emoji-id='5336985409220001678'>✅️</tg-emoji> Conversion cancelled.", buttons=None, parse_mode='html')
 
                 elif action == "convert":
                     # We need the original event object for the queue manager

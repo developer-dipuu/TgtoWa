@@ -201,7 +201,7 @@ class NetworkTask:
         for i, handle in enumerate(file_handles):
             if handle is None: return [] # extra safety, but there shouldnt be any, but nvm lets do it
             file_path = file_paths[i]
-            caption = f"📦 <a href=\"{pack_url}\">{pack_title}</a> - Part {i+1}/{num_files}\nSize: {format_file_size(os.path.getsize(file_path))}"
+            caption = f"<tg-emoji emoji-id='5785045099142450328'>📦</tg-emoji> <a href=\"{pack_url}\">{pack_title}</a> - Part {i+1}/{num_files}\nSize: {format_file_size(os.path.getsize(file_path))}"
             try:
                 message = await asyncio.wait_for(
                     self.client.send_file(chat_id, handle, caption=caption, link_preview=False, parse_mode='html'),

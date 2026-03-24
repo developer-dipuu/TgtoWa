@@ -160,9 +160,9 @@ DAILY_LIMIT_PREMIUM = 100
 #================ Messages ===============
 
 START_MESSAGE_FORMAT = f"""
-🎉 <b>Welcome to {{bot_username}}</b> 🎉
+<tg-emoji emoji-id="5472427507842032538">🎉</tg-emoji> <b>Welcome to {{bot_username}}</b>
 
-I can convert any <b>Telegram sticker or emoji pack</b> directly into <b>WhatsApp stickers</b> for you.
+I can convert any <b>Telegram sticker or emoji pack</b> directly into <b>WhatsApp stickers</b> for you. <tg-emoji emoji-id="5334998226636390258">✅</tg-emoji>
 
 <b>To get started, you can either:</b>
 • Send me a sticker or emoji pack link
@@ -170,66 +170,66 @@ I can convert any <b>Telegram sticker or emoji pack</b> directly into <b>WhatsAp
 
 For a full guide on features and how to import the stickers to WhatsApp, please use the /help command.
 
-⚠️ <b>Note:</b> You must be a member of following channels/groups to use this bot:
+<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> <b>Note:</b> You must be a member of following channels/groups to use this bot:
 {_channel_list_str}
 """
 
 HELP_MESSAGE = f"""
-📖 <b>Help Guide</b>
+<tg-emoji emoji-id="5388953246486269495">📖</tg-emoji> <b>Help Guide</b>
 
-🤔 <b>How to Convert a Pack?</b>
+<tg-emoji emoji-id="5785045099142450328">🤔</tg-emoji> <b>How to Convert a Pack?</b>
 You have two simple options:
 <blockquote>1.  <b>Send a Link</b>: Copy the sticker or emoji pack's link and send it to me.</blockquote>
 <blockquote>2.  <b>Send a Sticker/Emoji</b>: Just send any sticker or emoji from the pack you want. I'll handle the rest.</blockquote>
 
 ---
 
-✨ <b>Explore More Features</b>
+<tg-emoji emoji-id="5296739894914207637">✨</tg-emoji> <b>Explore More Features</b>
 <blockquote>• Use /commands to see a full list of all available commands.
 • Use /premium to check your premium status and learn about the benefits.</blockquote>
 
 ---
 
-👉 <b>How to Add Stickers to WhatsApp</b>
+<tg-emoji emoji-id="5334998226636390258">👉</tg-emoji> <b>How to Add Stickers to WhatsApp</b>
 
-1.  <b>📱 Install the App</b>: 
+1. <tg-emoji emoji-id="5256186019136421048">📱</tg-emoji> <b>Install the App</b>: 
 <blockquote>You'll need a helper app. We recommend <b>Sticker Maker</b>.
 
-<b>🔗Google Play Link</b>: <b><a href="https://play.google.com/store/apps/details?id=com.marsvard.stickermakerforwhatsapp">Click here</a></b>
-<b>🔗App Store Link</b>: <b><a href="https://apps.apple.com/us/app/sticker-maker-studio/id1443326857">Click here</a></b>
+<tg-emoji emoji-id="5373130604147654226">🔗</tg-emoji> <b>Google Play Link</b>: <b><a href="https://play.google.com/store/apps/details?id=com.marsvard.stickermakerforwhatsapp">Click here</a></b>
+<tg-emoji emoji-id="6271815741620621587">🔗</tg-emoji> <b>App Store Link</b>: <b><a href="https://apps.apple.com/us/app/sticker-maker-studio/id1443326857">Click here</a></b>
 </blockquote>
-2.  <b>📂 Open the File</b>: 
+2.  <tg-emoji emoji-id="5258134813302332906">📂</tg-emoji> <b>Open the File</b>: 
 <blockquote>Once I send you the <code>.wastickers</code> file, tap on it here in Telegram.
 </blockquote>
-3.  <b>⬇️ Import</b>: 
+3.  <tg-emoji emoji-id="5258336354642697821">⬇️</tg-emoji> <b>Import</b>: 
 <blockquote>Choose to open the file with the <b>Sticker Maker</b> app. Inside the app, tap "Add to my library" and then "Add to WhatsApp".
 </blockquote>
 That's it, your stickers are ready!
 
 ---
 
-📋 <b>Important Notes</b>
+<tg-emoji emoji-id="6037579284837567462">📋</tg-emoji> <b>Important Notes</b>
 
 • Packs with more than 30 stickers will be split into multiple files since WhatsApp supports only 30 stickers per pack.
 
-⏱️ <b>Queue System</b>
+<tg-emoji emoji-id="5256143829672672750">⏱️</tg-emoji> <b>Queue System</b>
 
 • During busy times, your request is placed in a queue to ensure fair processing.
 • You can check your position at any time using the /queue command.
-• ⭐ Premium users get priority and are moved to the front of the line!
+• <tg-emoji emoji-id="6080171114007367607">⭐</tg-emoji> Premium users get priority and are moved to the front of the line!
 
 
-💬 <b>Support</b>
+<tg-emoji emoji-id="5443038326535759644">💬</tg-emoji> <b>Support</b>
 
 If you run into any issues or have questions, please join our support group for assistance.
 <blockquote><b>Support Group</b>: <b>{SUPPORT_GROUP}</b></blockquote>
 
 """
 
-QUEUE_CHECK_MESSAGE = "📊 Queue Status\n\nYour position: {position}\nTotal in queue: {total}"
+QUEUE_CHECK_MESSAGE = "<tg-emoji emoji-id='5258513401784573443'>📊</tg-emoji> <b>Queue Status</b>\n\nYour position: {position}\nTotal in queue: {total}"
 
 CHANNEL_JOIN_MESSAGE = f"""
-❌ Access Denied!
+<tg-emoji emoji-id="5843952899184398024">❌</tg-emoji> <b>Access Denied!</b>
 
 To use this bot, you must join these channels/groups first:
 {_channel_list_str}
@@ -238,46 +238,46 @@ After joining try again!
 """
 
 COMMANDS_MESSAGE = """
-🤖 <b>Here are the commands you can use:</b>
+<tg-emoji emoji-id="5258093637450866522">🤖</tg-emoji> <b>Here are the commands you can use:</b>
 
-• /start - 👋 Displays the welcome message.
-• /help - 📖 Shows the detailed help guide.
-• /queue - 📊 Checks your current position in the conversion queue.
-• /mystats - 📈 Shows your usage statistics and current role.
-• /premium - ⭐ Displays your premium status and its benefits.
-• /commands - ⚙️ Shows a list of Available Commands
-• /suggest - ✨ Get recommendations for popular packs.
-• /contact - 📨 Send a message to the bot administrators.
+• /start - <tg-emoji emoji-id="5247133031235329609">👋</tg-emoji> Displays the welcome message.
+• /help - <tg-emoji emoji-id="5467461928647399673">📖</tg-emoji> Shows the detailed help guide.
+• /queue - <tg-emoji emoji-id="5258513401784573443">📊</tg-emoji> Checks your current position in the conversion queue.
+• /mystats - <tg-emoji emoji-id="5255900794653261326">📈</tg-emoji> Shows your usage statistics and current role.
+• /premium - <tg-emoji emoji-id="5258165702707125574">⭐</tg-emoji> Displays your premium status and its benefits.
+• /commands - <tg-emoji emoji-id="5258503720928288433">⚙️</tg-emoji> Shows a list of Available Commands
+• /suggest - <tg-emoji emoji-id="5255813559572508065">✨</tg-emoji> Get recommendations for popular packs.
+• /contact - <tg-emoji emoji-id="5260535596941582167">📩</tg-emoji> Send a message to the bot administrators.
 
 Just send any of these commands to get started!
 """
 
 CONTACT_PROMPT_MESSAGE = """
-⚠️ <b>Contact an Admin</b>
+<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> <b>Contact an Admin</b>
 
 This will forward your next message to the entire admin team. Please be patient for a response.
 
 <b>Please Note:</b>
 - This feature is for genuine queries and feedback only.
 - Abusing this feature for spam may result in a ban.
-
-Click "✉️ Send Message" to proceed or "❌ Cancel" to go back.
 """
 
-CONTACT_SUCCESS_MESSAGE = "✅ <b>Message Sent!</b>\n\nYour message has been forwarded to the admin team. If a reply is needed, they will contact you directly through me."
+CONTACT_SUCCESS_MESSAGE = '<tg-emoji emoji-id="5336985409220001678">✅</tg-emoji> <b>Message Sent!</b>\n\nYour message has been forwarded to the admin team. If a reply is needed, they will contact you directly through me.'
 
-CONTACT_ADMIN_REPLY_HEADER = "📨 <b>A reply from the admin team 👇</b>"
+CONTACT_FAILURE_MESSAGE = '<tg-emoji emoji-id="5019523782004441717">❌</tg-emoji> <b>Failed to Send Message!</b>\n\nYour message could not be forwarded to the admin team. Please try again later.'
+
+CONTACT_ADMIN_REPLY_HEADER = '<tg-emoji emoji-id="5406631276042002796">📨</tg-emoji> <b>A reply from the admin team <tg-emoji emoji-id="4992796097442218769">👇</tg-emoji></b>'
 
 CONTACT_ADMIN_NOTIFICATION_HEADER = """
-📩 <b>New User Message</b>
+<tg-emoji emoji-id="5253742260054409879">📩</tg-emoji> <b>New User Message</b>
 
-📄 <b>Contact ID:</b> <code>{contact_id}</code>
-👤 <b>From:</b> {user_display_name}
+<tg-emoji emoji-id="5258503720928288433">📄</tg-emoji> <b>Contact ID:</b> <code>{contact_id}</code>
+<tg-emoji emoji-id="5258011929993026890">👤</tg-emoji> <b>From:</b> {user_display_name}
 - <b>User ID:</b> <code>{user_id}</code>
 - <b>Status:</b> {role}
 - <b>Stats:</b>
-✅ Succeeded: <code>{succeeded}</code>
-❌ Failed: <code>{failed}</code>
-🚫 Cancelled: <code>{cancelled}</code>
-📍 Total: <code>{total}</code>
+<tg-emoji emoji-id="5260416304224936047">✅</tg-emoji> Succeeded: <code>{succeeded}</code>
+<tg-emoji emoji-id="5260342697075416641">❌</tg-emoji> Failed: <code>{failed}</code>
+<tg-emoji emoji-id="5258318620722733379">🚫</tg-emoji> Cancelled: <code>{cancelled}</code>
+<tg-emoji emoji-id="5258330865674494479">📍</tg-emoji> Total: <code>{total}</code>
 """
