@@ -104,11 +104,11 @@ class BotHandlers:
         self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest', func=lambda e: e.is_private))
 
         # Group Handlers
-        self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest@'+ username_regex + r'(?:$|\s.*)', func=lambda e: not e.is_private))
+        # self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest@'+ username_regex + r'(?:$|\s.*)', func=lambda e: not e.is_private))
         self.client.add_event_handler(self.help_command, events.NewMessage(pattern='/help@'+ username_regex + r'(?:$|\s.*)', func=lambda e: not e.is_private))
 
         # Restricted commands in groups (Redirect to DM)
-        restricted_cmds = ['start', 'queue', 'mystats', 'premium', 'commands', 'contact']
+        restricted_cmds = ['start', 'queue', 'mystats', 'premium', 'commands', 'suggest', 'contact']
         for cmd in restricted_cmds:
             self.client.add_event_handler(self.restricted_command_handler, events.NewMessage(pattern=rf"/{cmd}@{username_regex}(?:$|\s.*)", func=lambda e: not e.is_private))
 
@@ -120,6 +120,7 @@ class BotHandlers:
         self.client.add_event_handler(self.send_command, events.NewMessage(pattern=r'/send(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.gstats_command, events.NewMessage(pattern=r'/gstats', func=lambda e: db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.getdb_command, events.NewMessage(pattern='/getdb', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.id_command, events.NewMessage(pattern=r'/id(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.getlogs_command, events.NewMessage(pattern='/getlogs', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.toggle_cache_command, events.NewMessage(pattern='/togglecache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.clearcache_command, events.NewMessage(pattern=r'/clearcache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
@@ -588,6 +589,11 @@ class BotHandlers:
                 message = "<tg-emoji emoji-id='5305381957524272531'>❌</tg-emoji> This command is not available in groups.\n\nPlease click the button below to use it in private chat."
                 buttons = [
                     [Button.url("Contact", deep_link, style="primary", icon=5895457880710058528)]
+                ]
+            case 'suggest':
+                message = "<tg-emoji emoji-id='5305381957524272531'>❌</tg-emoji> This command is not available in groups.\n\nPlease click the button below to see the most popular sticker packs in private chat."
+                buttons = [
+                    [Button.url("Most Popular Sticker Packs", deep_link, style="primary", icon=6284845886417669247)]
                 ]
             case _:
                 message = "<tg-emoji emoji-id='5305381957524272531'>❌</tg-emoji> This command is not available in groups.\n\nPlease click the button below to use it in private chat."
@@ -1694,6 +1700,8 @@ class BotHandlers:
                 return await self.commands_command(event)
             elif parameter == 'contact':
                 return await self.contact_command(event)
+            elif parameter == 'suggest':
+                return await self.suggest_command(event)
             elif parameter == 'help':
                 return await self.help_command(event)
         
@@ -2331,6 +2339,24 @@ class BotHandlers:
         
         raise StopPropagation
 
+    async def id_command(self, event: events.NewMessage.Event):
+        """Owner command to get IDs of custom emojis sent in the message."""
+        if not getattr(event.message, 'entities', None):
+            await event.reply("No custom emojis found in the message.")
+            raise StopPropagation
+
+        emoji_list = []
+        
+        for entity, item_text in event.message.get_entities_text():
+            if isinstance(entity, MessageEntityCustomEmoji):
+                emoji_list.append(f"<tg-emoji emoji-id='{entity.document_id}'>{item_text}</tg-emoji>  :  <code>{entity.document_id}</code>")
+        
+        if not emoji_list:
+            await event.reply("<tg-emoji emoji-id='5852812849780362931'>❌️</tg-emoji> No custom emojis found in the message.", parse_mode='html')
+            raise StopPropagation
+            
+        await event.reply("\n".join(emoji_list), parse_mode='html')
+        raise StopPropagation
 
     async def getlogs_command(self, event: events.NewMessage.Event):
         """Owner command to get the screen log files."""        
