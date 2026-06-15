@@ -4,5 +4,6 @@ output/
 temp/
 extra_shits/
 *.session
+*.session-journal
 *.db
 .env
