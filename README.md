@@ -1,4 +1,4 @@
-# 🤖 Telegram to WhatsApp Stickers Converter Bot
+# Telegram to WhatsApp Stickers Converter Bot
 
 
 Welcome to the official page for the **Telegram to WhatsApp Stickers** bot! This simple yet powerful tool helps you bring your favorite Telegram stickers and emojis over to WhatsApp.
@@ -10,13 +10,13 @@ Welcome to the official page for the **Telegram to WhatsApp Stickers** bot! This
 </p>
 
 
-## ✨ Features
+## Features
 
 * **Simple & Powerful:** A user-friendly interface that gets the job done quickly.
 
 * **Universal Conversion:** Converts any Telegram sticker pack or emoji pack into a WhatsApp-compatible format.
 
-* **Supports All Types:** Whether it's animated or static, stickers or custom emojis, this bot handles them all! 🎬🖼️
+* **Supports All Types:** Whether it's animated or static, stickers or custom emojis, this bot handles them all!
 
 * **Free to Use:** The bot is free to use for converting your stickers.
 
@@ -26,7 +26,7 @@ Welcome to the official page for the **Telegram to WhatsApp Stickers** bot! This
 
 * **Discover New Packs:** Get suggestions for popular and trending sticker packs to convert.
 
-## 🚀 Getting Started
+## Getting Started
 
 Getting your stickers converted is a breeze. You have two options to start:
 
@@ -36,7 +36,7 @@ Getting your stickers converted is a breeze. You have two options to start:
 
 The bot will guide you through the rest of the process!
 
-## 🤖 Main Commands
+## Main Commands
 
 Here are the most important commands to get you started. For a full list of all commands, use `/command` in the bot.
 
@@ -50,7 +50,7 @@ Here are the most important commands to get you started. For a full list of all 
 
 * `/contact` - Use this command to get in touch with our support team for any help or feedback.
 
-## 💬 Support & Feedback
+## Support & Feedback
 
 Your feedback is valuable! If you encounter any bugs, have suggestions for new features, please use the `/contact` command within the bot.
 
