@@ -651,7 +651,7 @@ class BotHandlers:
                 except Exception as e:
                     logger.error(f"Failed to forward cached messages for pack {set_id} to user {user_id}: {e}")
                     # If forwarding fails, it's a critical error. Let's treat it as a cache miss and re-convert.
-                    await self.client.send_message(chat_id, "Oops! I found this in the cache, but couldn't send it. I'll try re-converting it for you now. <tg-emoji emoji-id='5384307092599348179'>🫡</tg-emoji>", reply_to=msg_to_reply_id)
+                    await self.client.send_message(chat_id, "Oops! I found this in the cache, but couldn't send it. I'll try re-converting it for you now. <tg-emoji emoji-id='5384307092599348179'>🫡</tg-emoji>", reply_to=msg_to_reply_id, parse_mode="html")
                     await db.update_conversion_log(log_id, "failed_forward_from_cache", datetime.now(timezone.utc), 0.0)
                     # clear the broken cache
                     asyncio.create_task(self.delete_cache(set_id))
