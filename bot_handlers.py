@@ -254,7 +254,13 @@ class BotHandlers:
         while True:
             try:
                 now = datetime.now(timezone.utc)
-                next_run = (now + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+                # target for 23:59:00 UTC today
+                next_run = now.replace(hour=23, minute=59, second=0, microsecond=0)
+                
+                # if the time is already past 23:59 then set it to 23:59 of the next day
+                if now >= next_run:
+                    next_run += timedelta(days=1)
+                
                 sleep_seconds = (next_run - now).total_seconds()
 
                 logger.info(f"Next daily backup scheduled in {(sleep_seconds / 3600):.2f} hours.")
