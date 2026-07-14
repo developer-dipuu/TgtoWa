@@ -1,511 +1,642 @@
 """
-Video to WebP Converter Module supports many video formats like WEBM, MP4, GIF, MOV, MKV, etc.
+A simple Python module for converting various video formats to animated WebP with various customizable settings.
+It supports many video formats like WEBM, MP4, GIF, MOV, MKV, etc.
 
-A simple Python module for converting various video formats (WebM, MP4, etc.) to animated WebP while compressing it to a maximum size cap (Default is 500KB).
-It will basically allow output files between [400,500]KB if SIZE_CAP_KB is 500KB (Default).
-Features smart timing preservation and performance optimization.
 """
 
 import os
-import tempfile
-from PIL import Image
-import io
-import time
-import webp
-import av
 import math
+import logging
+import io
+import webp
+import time
+import av
+from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 class VideoToWebPConverter:
-    """Converter class for Video to animated WebP conversion with automatic timing preservation."""
+    """Converter class for Video to WebP converter."""
     
-    def __init__(self, width: int = -1, height: int = -1, quality: int = 80,
-                 keep_aspect: bool = True, allow_upscale: bool = True, pad: bool = True):
+    def __init__(self, width: int = -1, height: int = -1, quality: int = 40,
+                frame_cap: bool = True, max_frames: int = 180, max_size: int = None,
+                keep_aspect: bool = True, allow_upscale: bool = True, pad: bool = True,
+                fps: float = 30.0, preserve_timing: bool = True, compress_faster: bool = False):
         """
-        Initialize the converter.
+        Initialize the converter with input validation.
+        """
 
-        Args:
-            width: Output width in pixels (-1 for original)
-            height: Output height in pixels (-1 for original)
-            quality: WebP quality (0-100)
-            keep_aspect: Preserve original aspect ratio (default True).
-            allow_upscale: Allow enlarging smaller sources to meet target (default True).
-            pad: When keep_aspect=True, pad with transparent canvas to fill target if True (default).
-                 If False, use cover+center-crop mode instead.
-        """
+        # ---- Input Validation ----
+        
+        # height and width, can be -1 or 1 to 8192(8k)
+        if not isinstance(width, int) or (width <= 0 and width != -1) or width > 8192:
+            raise ValueError(f"Width must be -1 or a positive integer up to 8192. Got: {width}")
+        if not isinstance(height, int) or (height <= 0 and height != -1) or height > 8192:
+            raise ValueError(f"Height must be -1 or a positive integer up to 8192. Got: {height}")
+        
+        # quality (0-100)
+        if not isinstance(quality, int) or not (0 <= quality <= 100):
+            raise ValueError(f"Quality must be an integer between 0 and 100. Got: {quality}")
+        
+        # max_frames (1 to inf)
+        if not isinstance(max_frames, int) or max_frames <= 0:
+            raise ValueError(f"Max frames must be a positive integer. Got: {max_frames}")
+        
+        # max_size (1 to inf)
+        if max_size is not None and (not isinstance(max_size, int) or max_size <= 0):
+            raise ValueError(f"Max size must be a positive number or None. Got: {max_size}")
+            
+        # fps (0 to 120), greater than 120 leads to some issues
+        if not isinstance(fps, (int, float)) or fps <= 0 or fps > 120:
+            raise ValueError(f"FPS must be a positive number up to 120. Got: {fps}")
+
+        # Booleans
+        for name, val in [('frame_cap', frame_cap), ('keep_aspect', keep_aspect), 
+                          ('allow_upscale', allow_upscale), ('pad', pad), 
+                          ('preserve_timing', preserve_timing), ('compress_faster', compress_faster)]:
+            if not isinstance(val, bool):
+                raise TypeError(f"'{name}' must be strictly a boolean. Got: {type(val).__name__}")
+
+        # ---- storing validated values ----
+        
         self.width = width
         self.height = height
         self.quality = quality
+        self.frame_cap = frame_cap
+        self.max_frames = max_frames
+        self.max_size = max_size
         self.keep_aspect = keep_aspect
         self.allow_upscale = allow_upscale
         self.pad = pad
-
-    def _create_webp_buffer(self, frames, quality, fps):
-        if not frames:
-            return None
-
-        # create a temp file
-        tmp_file = tempfile.NamedTemporaryFile(suffix=".webp", delete=False)
-        tmp_path = tmp_file.name
-        tmp_file.close()  # close so webp.save_images can safely write on all platforms
-        try:
-            webp.save_images(frames, tmp_path, fps=fps, quality=quality)
-
-            with Image.open(tmp_path) as img:
-                buf = io.BytesIO()  # Create an empty buffer
-
-                # Check if the image is static
-                if getattr(img, 'n_frames', 1) == 1:
-                    # It's a static webp strip the extra misleading metadata. (its causing problem beacsue the ouput is getting detected as animated webp)
-                    # And video will usuallly be converted to animated webP, but if it has a single frame repeating again and again then why not make it static
-                    # it will add to our computation but will be easier on end user's cpu 🥲
-                    print("-> ✨ Stripping unnecessary animation metadata from static WebP.")
-                    img.save(buf, format='WEBP', quality=quality)
-                    
-                else:
-                    # If it's an animated webp no need to strip metadata
-                    with open(tmp_path, 'rb') as fh:
-                        buf.write(fh.read())
-                buf.seek(0)
-                return buf
-        except Exception:
-            return None
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-        
-
+        self.fps = fps
+        self.preserve_timing = preserve_timing
+        self.compress_faster = compress_faster
 
     @staticmethod
-    def _binary_search(frames: list, target_range: tuple, search_space: tuple, evaluator_func) -> tuple[int, int]:
-        """
-        Performs a binary search to find a value in search_space that results
-        in an outcome within target_range.
-
-        Args:
-            target_range: A (min, max) tuple for the desired outcome (file size ).
-            search_space: A (min, max) tuple for the values to search (e.g., frame count or quality).
-            evaluator_func: A function that takes a value from search_space and returns an outcome.
-
-        Returns:
-            A tuple of (best_value, best_size). Returns (None, None) if no suitable value is found.
-        """
-        # frame range
-        low, high = search_space
-        best_value = None
-        best_size = float('inf')
-
-        low, high = int(low), int(high)
-        if low > high:
-            return None, None
-
-        while low <= high:
-            mid = (low + high) // 2
-            if mid == 0:
-                mid = 1
-            # call either size_4_this_frames or size_4_this_quality
-            current_size = evaluator_func(frames, mid)
-
-            # size is under the range
-            if target_range[0] <= current_size <= target_range[1]:
-                return mid, current_size
-            # size is lower than range minimum, not what we want but can be used if we dont find any under the range
-            elif current_size < target_range[0]:
-                best_value = mid
-                best_size = current_size
-                low = mid + 1
-            # size is heigher than range maximum
-            else:
-                high = mid - 1
-
-        # return the best frames/quality and best size if no ones fall in the size range after all iterations
-        if best_value is not None and best_size <= target_range[1]:
-            return best_value, best_size
-        
-        # if size is heigher than range max for all values
-        return None, None
-
-
-    @staticmethod
-    def _select_indices(total_frames: int, original_duration: float, count: int) -> list[int]:
+    def _select_indices(total_frames: int, count: int | float = float('inf')) -> list[int]:
         """
         Selects a specific count of frame indices from a total number of frames.
         """
-        if count <= 0:
+        if total_frames <= 0 or count <= 0:
             selected_indices = []
         elif count == 1:
             selected_indices = [0]
         elif count >= total_frames:
             selected_indices = list(range(total_frames))
         else:
-            # Calculate target timestamps
-            d = max(original_duration, 1e-6)
-            targets = [i * (d / (count - 1)) for i in range(count)]
-            # Map timestamps back to frame indices
-            selected_indices = []
-            for t in targets:
-                idx = int(round((t / d) * (total_frames - 1)))
-                if idx < 0: idx = 0
-                if idx > total_frames - 1: idx = total_frames - 1
-                # avoid duplicates by ensuring monotonic increasing indices
-                if not selected_indices or idx > selected_indices[-1]:
-                    selected_indices.append(idx)
-            # If we lost some frames due to removing duplicates, fill by evenly spaced integer indices
-            if len(selected_indices) < count:
-                selected_indices = [int(round(i * (total_frames - 1) / (count - 1))) for i in range(count)]
-
+            selected_indices = [round(i * (total_frames - 1) / (count - 1)) for i in range(count)]
         return selected_indices
     
 
-    def _extract_frames_from_video(self, video_path: str, count: int):
+    def _resize_frame(self, frame: Image) -> Image:
+        """
+        Resize a single PIL Image to target dimensions while respecting keep_aspect and allow_upscale.
+        """
+        orig_w, orig_h = frame.size
+        target_w = self.width if self.width != -1 else orig_w
+        target_h = self.height if self.height != -1 else orig_h
+        pad_mode = self.pad
+
+        # if haven't given width and height or given but our image is already of that dimension, we need not to resize
+        if (orig_w, orig_h) == (target_w, target_h):
+            return frame
+        
+        # =========== Resize with keep aspect ratio ===========
+        if self.keep_aspect:
+            # ---- calculate scale factor ----
+            if pad_mode:
+                # Use min() to fit the entire image inside target box, later we'll pad with transparent pixels
+                scale = min(target_w / orig_w, target_h / orig_h)
+            else:
+                # Use max() to cover the whole target box with image even if it overflows, later we'll crop upto target box
+                scale = max(target_w / orig_w, target_h / orig_h)
+            
+            if not self.allow_upscale and scale > 1.0:
+                scale = 1.0
+                pad_mode = True # Force padding if we can't upscale to crop
+
+            # ----- calculate new height and width using scale factor -----
+            if pad_mode:
+                # Make sure new dims are <= target using floor & using min() for rounding overshoot
+                new_w = max(1, int(math.floor(orig_w * scale)))
+                new_h = max(1, int(math.floor(orig_h * scale)))
+                # Using min() for rounding overshoot
+                new_w = min(new_w, target_w)
+                new_h = min(new_h, target_h)
+            else:
+                # cover: make sure new dims are >= target using ceil and using max() for rounding overshoot
+                new_w = max(1, int(math.ceil(orig_w * scale)))
+                new_h = max(1, int(math.ceil(orig_h * scale)))
+                # Using max() for rounding overshoot
+                new_w = max(new_w, target_w)
+                new_h = max(new_h, target_h)
+            
+            # Resize using calculated new height and width
+            resized = frame.resize((new_w, new_h), Image.LANCZOS)
+
+            # ---------- Finally, Pad or Crop ----------
+            if pad_mode:
+                # create a canvas and paste resized image on it
+                canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+                left = (target_w - new_w) // 2
+                top = (target_h - new_h) // 2
+                # paste the resized image on the canvas starting at (left, top) coordinates
+                canvas.paste(resized, (left, top), resized)
+                final_img = canvas
+            else:
+                # Crop mode: crop the resized (overflowed) image to target size
+                left = (new_w - target_w) // 2
+                top = (new_h - target_h) // 2
+                # (left, top, right, bottom) defining the boundaries of the crop box.
+                final_img = resized.crop((left, top, left + target_w, top + target_h))
+        
+        # ============ resize without keeping aspect ratio ============
+        else:
+            desired_w, desired_h = target_w, target_h
+            if not self.allow_upscale:
+                # clamp each dimension separately so we don't upscale any axis
+                desired_w = min(desired_w, orig_w)
+                desired_h = min(desired_h, orig_h)
+                
+            if (desired_w, desired_h) == (orig_w, orig_h):
+                resized = frame
+            else:
+                resized = frame.resize((desired_w, desired_h), Image.LANCZOS)
+            
+            # Ensure final output is exactly target size by centering resized on transparent canvas when needed
+            if (desired_w, desired_h) == (target_w, target_h):
+                final_img = resized
+            else:
+                # create a canvas and paste resized image on it
+                canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+                left = (target_w - desired_w) // 2
+                top = (target_h - desired_h) // 2
+                # paste the resized image on the canvas starting at (left, top) coordinates
+                canvas.paste(resized, (left, top), resized)
+                final_img = canvas
+        
+        return final_img
+
+    @staticmethod
+    def _get_video_metadata(container, stream) -> dict:
+        """
+        Extract video metadata from an open container. No decoding.
+        
+        Returns a dict with:
+        - fps (float): best-guess FPS, always > 0
+        - duration (float | None): seconds if known from metadata, else None
+        - frame_count (int): from header, 0 if unknown
+        - width, height (int): video dimensions
+        """
+        # fps: guessed_rate > average_rate > fallback
+        fps = 30.0
+        if stream.guessed_rate:
+            fps = float(stream.guessed_rate)
+        elif stream.average_rate:
+            fps = float(stream.average_rate)
+        fps = max(fps, 1.0)
+
+        # duration: container > stream > None
+        duration = None
+        if container.duration is not None and container.duration > 0:
+            duration = container.duration / 1_000_000  # microseconds to seconds
+        elif stream.duration is not None and stream.time_base is not None:
+            d = float(stream.duration * stream.time_base)
+            if d > 0:
+                duration = d
+
+        # frame count from header (0 if unknown)
+        frame_count = stream.frames
+
+        return {
+            "fps": fps,
+            "duration": duration,
+            "frame_count": frame_count,
+            "width": stream.width,
+            "height": stream.height
+        }
+
+
+    def _extract_frames_from_video(self, video_path: str, count: int | float=float('inf')):
         """
         Decodes only required frames from a video file into a list of PIL Images.
         """
-        frames = []
-        original_duration = 0.0
         try:
+            logger.info("Extracting frames from video...")
+
             with av.open(video_path) as container:
-                if not container.streams.video:
+                stream = container.streams.best("video")
+                if stream is None:
                     raise ValueError("The provided file has no video streams.")
-                stream = container.streams.video[0]
 
-                original_fps = float(stream.average_rate) if getattr(stream, "average_rate", None) else 30.0
+                metadata = self._get_video_metadata(container, stream)
+                metadata_duration = metadata["duration"]
+                original_fps = metadata["fps"]
+                total_frames = metadata["frame_count"]  # may be 0
 
-                # Decode all frames but store as av.VideoFrame with timestamps (don't convert to PIL now)
-                decoded = []
-                for frame in container.decode(stream):
-                    # Prefer frame.time (float seconds) if available, else compute from pts & time_base
-                    t = None
-                    if getattr(frame, "time", None) is not None:
-                        t = float(frame.time)
-                    elif getattr(frame, "pts", None) is not None and getattr(frame, "time_base", None) is not None:
-                        t = float(frame.pts * frame.time_base)
-                    decoded.append((t, frame))
-                    
-                if not decoded:
+                # --- Count frames if header didn't provide it ---
+                if total_frames == 0:
+                    # cheap packet count
+                    total_frames = sum(1 for _ in container.demux(stream))
+                    # Subtract 1 because demux yields a trailing flush packet
+                    total_frames = max(total_frames - 1, 0)
+                    container.seek(0)  # reset
+                if total_frames == 0:
                     raise ValueError("Video file appears to have no frames.")
-                
-                precision = False # if you want precision over reliability for calulating video duratio
 
-                total_frames = len(decoded)
-                duration_seconds = None
-                
-                if precision:
-                    if getattr(container, "duration", None) not in (None, 0):
-                        duration_seconds = float(container.duration) / 1_000_000.0
-                    elif getattr(stream, "duration", None) and getattr(stream, "time_base", None):
-                        duration_seconds = float(stream.duration * stream.time_base)
 
-                # Calculating duration from actual frame timestamps, as metadata can be unreliable.
-                last_frame_time = decoded[-1][0]
-                
-                # if the last frame's timestamp is valid
-                if last_frame_time is not None and last_frame_time > 0.0:
-                    # the duration is the timestamp of the last frame.
-                    # We add the duration of one more frame to account for the last frame's display time.
-                    avg_frame_duration = 1.0 / max(original_fps, 1.0)
-                    duration_seconds = last_frame_time + avg_frame_duration
-                else:
-                    # Fallback: If timestamps are zero or None, estimate duration from frame count and FPS.
-                    # This is a last resort for videos with broken time information.
-                    print("-> ⚠️ Warning: Could not determine duration from frame timestamps. Falling back to FPS-based estimation.")
-                    duration_seconds = total_frames / max(original_fps, 1.0)
-                
-                # Ensure we have a small, non-zero duration to prevent division-by-zero errors.
-                original_duration = max(duration_seconds, 1e-6)
+                # which indices to keep
+                indices_to_keep = set(self._select_indices(total_frames, count))
 
-                original_duration = duration_seconds
-                # logging
-                print(f"Decoded {total_frames} frames; duration ~ {original_duration:.3f}s; avg_fps={original_fps}")
-                # Logging details 
-                if total_frames > count:
-                    print(f"Limiting video to {count} frames for performance.")
-                else:
-                    print(f"Preserving all {total_frames} frames.")
-
-                # Extract frames
-                indices_to_extract = self._select_indices(total_frames, original_duration, count)
-                for idx in indices_to_extract:
-                    # Append frames to the frames list
-
-                    av_frame = decoded[idx][1]
-                    pil_image = av_frame.to_image()
-                    orig_w, orig_h = pil_image.size
-                    target_w = self.width if self.width != -1 else orig_w
-                    target_h = self.height if self.height != -1 else orig_h
-                    pad_mode = self.pad
-
-                    # ========== resize logic ===========
-                     
-                    # if haven't given width and height or given but our image is already of that dimension, we need not to resize
-                    if (orig_w, orig_h) == (target_w, target_h):
-                        final_img = pil_image.convert("RGBA")
-                    
-                    else:# nah now we have to resize
-                        if self.keep_aspect:
-                            if pad_mode:
-                                # Fit inside target, then pad (transparent canvas)
-                                scale = min(target_w / orig_w, target_h / orig_h)
-                            else:
-                                # Cover the target, then crop center
-                                scale = max(target_w / orig_w, target_h / orig_h)
-                            # enforce allow_upscale (if manually set to Flase by user) and then we can only pad as cropping won't meet the asked dimensions
-                            if not self.allow_upscale and scale > 1.0:
-                                scale = 1.0
-                                pad_mode = True
-                            if pad_mode:
-                                # fit: make sure new dims are <= target (use floor / clamp)
-                                new_w = max(1, int(math.floor(orig_w * scale)))
-                                new_h = max(1, int(math.floor(orig_h * scale)))
-                                # clamp in case of rounding overshoot
-                                new_w = min(new_w, target_w)
-                                new_h = min(new_h, target_h)
-                            else:
-                                # cover: make sure new dims are >= target (use ceil / ensure minimum)
-                                new_w = max(1, int(math.ceil(orig_w * scale)))
-                                new_h = max(1, int(math.ceil(orig_h * scale)))
-                                if new_w < target_w:
-                                    new_w = target_w
-                                if new_h < target_h:
-                                    new_h = target_h
-                            # scale the image
-                            resized = pil_image.resize((new_w, new_h), Image.LANCZOS).convert("RGBA")
-                            if pad_mode:
-                                # paste centered onto transparent canvas of exact target size
-                                canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
-                                left = (target_w - new_w) // 2
-                                top = (target_h - new_h) // 2
-                                canvas.paste(resized, (left, top), resized)
-                                final_img = canvas
-                            else:
-                                # crop center from resized image (new_w/new_h >= target)
-                                left = (new_w - target_w) // 2
-                                top = (new_h - target_h) // 2
-                                final_img = resized.crop((left, top, left + target_w, top + target_h))
-                        else:
-                            # keep_aspect == False: strict stretch to target, but if upscaling disabled, clamp per-dimension
-                            desired_w, desired_h = target_w, target_h
-                            if not self.allow_upscale:
-                                # clamp each dimension separately so we don't upscale any axis
-                                desired_w = min(desired_w, orig_w)
-                                desired_h = min(desired_h, orig_h)
-                                
-                            if (desired_w, desired_h) == (orig_w, orig_h):
-                                resized = pil_image.convert("RGBA")
-                            else:
-                                resized = pil_image.resize((desired_w, desired_h), Image.LANCZOS).convert("RGBA")
-                            # Ensure final output is exactly target size by centering resized on transparent canvas when needed
-                            if desired_w == target_w and desired_h == target_h:
-                                final_img = resized
-                            else:
-                                canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
-                                left = (target_w - desired_w) // 2
-                                top = (target_h - desired_h) // 2
-                                canvas.paste(resized, (left, top), resized)
-                                final_img = canvas
-                    frames.append(final_img)
-
+                # ---- decode pass with selective .to_image() conversion and storing ----
+                frames = []
+                last_frame_time = None
+                for i, frame in enumerate(container.decode(stream)):
+                    # Track last timestamp for duration fallback
+                    if frame.time is not None:
+                        last_frame_time = frame.time
+                    # convert + resize and store only selected frames
+                    if i in indices_to_keep:
+                        pil_image = frame.to_image().convert("RGBA")
+                        resized_image = self._resize_frame(pil_image)
+                        frames.append(resized_image)
                 if not frames:
                     raise ValueError("Video file appears to have no frames.")
-
-
-
                 
-                print(f"Video details: {original_duration:.2f}s duration, {stream.width}x{stream.height} resolution.")
 
+                # --- check duration (fallback in case metadata is wrong) ---
+                if metadata_duration is not None:
+                    original_duration = metadata_duration
+                elif last_frame_time is not None and last_frame_time > 0:
+                    original_duration = last_frame_time + (1.0 / original_fps)
+                else:
+                    original_duration = total_frames / original_fps
+                original_duration = max(original_duration, 1e-6)  # prevent zero
+                
+                logger.info("Video details: resolution: %dx%d; duration: %.2fs; frames: %d; FPS: %.2f.", metadata['width'], metadata['height'], original_duration, total_frames, original_fps)
+
+                return frames, original_duration
+
+        except ValueError:
+            raise
         except Exception as e:
-            print(e)
+            logger.error("Error while decoding video file: %s", e)
             raise ValueError(f"Could not decode video file with PyAV: {video_path}") from e
 
-        return frames, original_duration
 
+
+    def _create_webp_buffer(self, frames: list[Image.Image], quality: int, fps: float) -> io.BytesIO:
+        """
+        Create a WebP animated image buffer from a list of PIL Image frames.
+
+        Args:
+            frames: List of PIL Image frames to convert
+            quality: WebP quality level (0-100)
+            fps: Frames per second for the animation
+
+        Returns:
+            io.BytesIO: Buffer containing the animated WebP image
+        """
+        if not frames:
+            raise ValueError("No frames provided to create WebP buffer")
+        if quality < 0 or quality > 100:
+            raise ValueError("Quality must be between 0 and 100")
+        if fps <= 0:
+            raise ValueError("FPS must be positive")
+
+        buf = io.BytesIO()  # Create empty buffer
+
+        try:
+
+            w, h = frames[0].size
+
+            if any(img.size != (w, h) for img in frames):
+                raise ValueError("All frames must have the same size")
+
+            # Initialize Encoder Options and Encoder
+            enc_opts = webp.WebPAnimEncoderOptions.new()
+            enc = webp.WebPAnimEncoder.new(w, h, enc_opts)
+            
+            # Set up quality config
+            config = webp.WebPConfig.new(quality=quality)
+            
+            for i, img in enumerate(frames):
+                # Convert PIL image to WebPPicture object
+                pic = webp.WebPPicture.from_pil(img)
+                # Encode frame with its calculated timestamp
+                t = round((i * 1000) / fps)
+                enc.encode_frame(pic, t, config)
+            
+            # Assemble the final animated data
+            end_t = round((len(frames) * 1000) / fps)
+            anim_data = enc.assemble(end_t)
+            
+            # Write the raw bytes to buffer
+            buf.write(anim_data.buffer())
+            
+            buf.seek(0)
+            return buf
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to create WebP buffer: {e}") from e
+
+    # Helper to select a subset of frames evenly
+    @staticmethod
+    def select_frames(frames: list[Image.Image], count: int) -> list[Image.Image]:
+        """
+        Returns a list of frames selected evenly from the given frames.
+        """
+        if count <= 0 or len(frames) <= 0:
+            return []
+        if count == 1:
+            return [frames[0]]
+        if count >= len(frames):
+            return frames
+        
+        indices = [round(i * (len(frames) - 1) / (count - 1)) for i in range(count)]
+        return [frames[i] for i in indices]
+
+    def _binary_search(self, frames: list[Image.Image], target_range: tuple, search_space: tuple, search_type: str) -> tuple[int, int, io.BytesIO] | tuple[None, None, None]:
+        """
+        Performs a binary search on the given range of frames or quality to find a value that results
+        in a size within target range.
+        It uses helper functions based on the 'search_type' parameter to evaluate the size for a given value in search_space.
+
+        Args:
+            frames: List of frames to search on.
+            target_range: A (min, max) tuple for the desired file size range (inclusive).
+            search_space: A (min, max) tuple for the frame count or quality range to search in (inclusive).
+            search_type: Type of search to be performed. It can be 'frame' or 'quality'.
+        Returns:
+            A tuple of (best_value, best_size, best_buffer). Returns (None, None, None) if no suitable value is found.
+        """
+
+        # helper to get size for specific number of frames from given a list of frames
+        def size_4_these_frames(count: int) -> tuple[io.BytesIO, int]:
+            """
+            Creates webp buffer by selecting a targetted number of frames evenly and returns the buffer and its size in bytes.
+            It uses the 'self.final_quality' and 'frames' passed to _binary_search function.
+            """
+            frames_to_test = self.select_frames(frames, count)
+            _fps = len(frames_to_test) / self.original_duration if self.preserve_timing else self.fps
+            
+            # self.final_quality is updated accordingly inside convert() before calling binary search on frames
+            # so we need not to worry about that here
+            buffer = self._create_webp_buffer(frames_to_test, self.final_quality, _fps)
+            
+            return buffer, buffer.getbuffer().nbytes
+        
+        # helper to get size for quality
+        def size_4_this_quality(quality: int) -> tuple[io.BytesIO, int]:
+            """
+            Creates webp buffer using given quality and returns the buffer and its size in bytes.
+            It uses the 'frames' passed to _binary_search function.
+            """
+            _fps = len(frames) / self.original_duration if self.preserve_timing else self.fps
+
+            buffer = self._create_webp_buffer(frames, quality, _fps)
+            
+            return buffer, buffer.getbuffer().nbytes
+
+        # search boundaries and best found value
+        low, high = search_space
+        best_value = None
+        best_size = float('inf')
+        best_buffer = None
+
+        low, high = int(low), int(high)
+        if low > high:
+            return None, None, None
+
+        while low <= high:
+            mid = (low + high) // 2
+
+            # call either size_4_these_frames or size_4_this_quality
+            evaluator_func = size_4_these_frames if search_type == "frame" else size_4_this_quality
+            buffer, current_size = evaluator_func(mid)
+            # size is within the range
+            if target_range[0] <= current_size <= target_range[1]:
+                return mid, current_size, buffer
+            # size is lower than range minimum, not what we want but can be used if we dont find any under the range
+            elif current_size < target_range[0]:
+                best_value = mid 
+                best_size = current_size
+                best_buffer = buffer
+                low = mid + 1
+            # size is higher than range maximum
+            else:
+                high = mid - 1
+        
+        # return the best frames/quality and best size if no ones fall in the size range after all iterations
+        if best_value is not None and best_buffer is not None:
+            return best_value, best_size, best_buffer
+        # if size is higher than range max for all values
+        return None, None, None
     
+
+
     def convert(self, video_path: str, webp_path: str) -> bool:
         """
-        Convert Video file to animated WebP with a size cap of ~500KB.
+        Main function to handle the conversion logic
+        
+        Args:
+            video_path: Path to input video file
+            webp_path: Path to output WebP file
+            
+        Returns:
+            True if conversion successful, False otherwise
+            
+        Raises:
+            FileNotFoundError: If video file doesn't exist
+            ValueError: If failed to extract frames or create WebP buffer
+            IOError: If output file cannot be written
         """
         start_time = time.monotonic()
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
-        
 
-        MAX_FRAMES_CAP = 30
-
-        # ========== Step 1: Extract Frames From Video & get other metatdeta info and all ===========
+        # ========= Render frames based on max allowed frames ==========
         try:
-            final_frames, original_duration = self._extract_frames_from_video(video_path, MAX_FRAMES_CAP)
+            # Frame cap
+            max_frames = self.max_frames if self.frame_cap else float('inf')
+            # Render the frames
+            final_frames, _original_duration = self._extract_frames_from_video(video_path, max_frames)
+            self.original_duration = _original_duration
+
+            if not final_frames:
+                raise ValueError("No frames could be rendered from video")
+        except ValueError:
+            raise
         except Exception as e:
-            raise ValueError(f"Failed to extract frames from video: {e}")
-
-        if not final_frames:
-            raise ValueError("Could not render any frames from the video file.")
-
-        # some important variables
-        SIZE_CAP_KB = 490 # size cap (490 should be 500 but just a lil prtection for some shit file managers)
-        SIZE_TARGET_RANGE = ((SIZE_CAP_KB-100) * 1024, SIZE_CAP_KB * 1024)  
-        CAP_FRAMES_SiZE = len(final_frames)
-        FRAME_PIVOT = CAP_FRAMES_SiZE // 2
-        final_quality = self.quality
-        successful_buffer = None
+            logger.error("Error while extracting frames from video: %s", e)
+            raise
         
-        # Helper to select a subset of frames evenly
-        def select_frames(source_frames, count):
-            if count <= 0: return []
-            if count == 1:
-                return [source_frames[0]]
-            if count >= len(source_frames): return source_frames
-            indices = [int(i * (len(source_frames) - 1) / (count - 1)) for i in range(count)]
-            return [source_frames[i] for i in indices]
+        capped_frames = len(final_frames)
 
-        #  helper to get size for specific number of frames from given a list of frames
-        def size_4_this_frames(frames, num_frames):
-            nonlocal successful_buffer
-            frames_to_test = select_frames(frames, num_frames)
-            if not frames_to_test: return float('inf')
-            fps = len(frames_to_test) / original_duration
-            
-            buffer = self._create_webp_buffer(frames_to_test, final_quality, fps)
-            
-            if buffer:
-                successful_buffer = buffer
-                return buffer.getbuffer().nbytes
-            return float('inf')
-
-        # helper to get size for quality
-        def size_4_this_quality(frames, quality):
-            nonlocal successful_buffer
-            if not frames: return float('inf')
-            fps = len(frames) / original_duration
-            buffer = self._create_webp_buffer(frames, quality, fps)
-
-            if buffer:
-                successful_buffer = buffer
-                return buffer.getbuffer().nbytes
-            return float('inf')
-        
-        # =======  Step 2: start searching for best size  ============
-
-        print(f"🔊 Video file found, aiming for a file size under {SIZE_CAP_KB}KB.")
-
-        # Stage A: Try with max frames at default quality
-        print(f"[*] Stage A: Testing with {len(final_frames)} frames @ Q={final_quality}...")
-        buffer = self._create_webp_buffer(final_frames, final_quality, len(final_frames) / original_duration)
-        current_size = buffer.getbuffer().nbytes if buffer else float('inf')
-
-        # If it's a success hold on to this buffer for the final save.
-        if current_size <= SIZE_TARGET_RANGE[1]:
-            successful_buffer = buffer
-            print(f"☑️ Success! Size is {current_size / 1024:.1f}KB. No further optimization needed.")
+        if self.preserve_timing:
+            logger.info("Preserving original duration")
         else:
-            print(f"->👎 Too big ({current_size / 1024:.1f}KB). Starting advanced optimization...")
+            logger.info("Original duration will not be preserved. Using custom FPS: %s", self.fps)
+        
+
+        # ===================== Create buffer with max frames at given quality =====================
+        self.final_quality = self.quality
+        _fps = capped_frames / self.original_duration if self.preserve_timing else self.fps
+        if _fps <= 0.0: _fps = 1 # Avoid zero
+        logger.info("Started processing... Frames: %s, Quality: %s", capped_frames, self.final_quality)
+        buffer = self._create_webp_buffer(final_frames, self.final_quality, _fps)
+
+
+        # ================== if compression is enabled search for best frames and quality ====================
+        compress = self.max_size is not None
+
+        if compress:
+            size_cap_kb = self.max_size
+                
+            if self.compress_faster:
+                size_target_range = (int(size_cap_kb * 0.75 * 1024) , size_cap_kb * 1024)  # Target [75% of max_size, max_size]
+            else:
+                size_target_range = (size_cap_kb * 1024, size_cap_kb * 1024)  # Target [max_size, max_size]
             
-            # Define search ranges
-            frame_range_1 = (FRAME_PIVOT, CAP_FRAMES_SiZE)
-            frame_range_2 = (1, FRAME_PIVOT)
-            fallback_frame_count = FRAME_PIVOT
+            logger.info("Aiming for a file size under %sKB.", size_cap_kb)
 
-            quality_range_1 = (int(self.quality / 2), self.quality)
-            quality_range_2 = (1, int(self.quality / 2))
-            fallback_quality = int(self.quality/2)
+            current_size = buffer.getbuffer().nbytes
 
-            # --- Start the search  ---
-
-            # Stage B: Binary search on frame_range1
-            print(f"[*] Stage B: Searching frame count in [{int(frame_range_1[0])}, {int(frame_range_1[1])}] @ Q={final_quality}...")
-            best_f, best_s = self._binary_search(final_frames, SIZE_TARGET_RANGE, frame_range_1, size_4_this_frames)
-
-            if best_f:
-                print(f"-> ☑️ Found solution in Stage B: {best_f} frames, size {best_s / 1024:.1f}KB.")
+            
+            if current_size <= size_target_range[1]: # If it's already under the size limit, no need to compress
+                logger.info("Success! Size is %.1fKB. No further optimization needed.", current_size / 1024)
             else:
-                # Stage C: Binary search on quality_range_1
-                print(f"[*] Stage C: Too big. Fixing at {fallback_frame_count} frames. Searching quality in [{quality_range_1[0]}, {quality_range_1[1]}]...")
-                final_frames = select_frames(final_frames, fallback_frame_count)
-                best_q, best_s = self._binary_search(final_frames, SIZE_TARGET_RANGE, quality_range_1, size_4_this_quality)
+                logger.info("Too big (%.1fKB). Starting advanced optimization...", current_size / 1024)
+                
+                # Define search ranges
+                frame_range_1 = (max(1, capped_frames //2), capped_frames)
+                frame_range_2 = (1, max(1, capped_frames // 2))
+                fallback_frame_count = max(1, capped_frames // 2)
 
-                if best_q:
-                    print(f"-> ☑️ Found solution in Stage C: Q={best_q}, size {best_s / 1024:.1f}KB.")
+                quality_range_1 = (max(0, int(self.quality / 2)), self.quality)
+                quality_range_2 = (0, max(0, int(self.quality / 2)))
+                fallback_quality = max(0, int(self.quality/2))
+
+                # --- Start the search  ---
+
+                # Stage A: Binary search on frame_range1
+                logger.info("Stage A: Searching frame count in [%s, %s] @ Q=%s...", frame_range_1[0], frame_range_1[1], self.final_quality)
+                best_f, best_s, best_buff = self._binary_search(final_frames, size_target_range, frame_range_1, 'frame')
+
+                if best_f is not None:
+                    buffer = best_buff
+                    logger.info("Found solution in Stage A: %s frames, size %.1fKB.", best_f, best_s / 1024)
                 else:
-                    # Stage D: Binary search on frame_range_2
-                    print(f"[*] Stage D: Still too big. Fixing quality at {fallback_quality}. Searching frames in [{int(frame_range_2[0])}, {int(frame_range_2[1])}]...")
-                    final_quality = fallback_quality
-                    best_f, best_s = self._binary_search(final_frames, SIZE_TARGET_RANGE, frame_range_2, size_4_this_frames)
+                    # Stage B: Binary search on quality_range_1
+                    logger.info("Stage B: Too big. Fixing at %s frames. Searching quality in [%s, %s]...", fallback_frame_count, quality_range_1[0], quality_range_1[1])
+                    stage_b_frames = self.select_frames(final_frames, fallback_frame_count) # fixed frames to search for quality
+                    best_q, best_s, best_buff = self._binary_search(stage_b_frames, size_target_range, quality_range_1, 'quality')
 
-                    if best_f:
-                        print(f"-> ☑️ Found solution in Stage D: {best_f} frames, size {best_s / 1024:.1f}KB.")
+                    if best_q is not None:
+                        buffer = best_buff
+                        logger.info("Found solution in Stage B: Q=%s, size %.1fKB.", best_q, best_s / 1024)
                     else:
-                        # Stage E: Binary search on quality_range_2
-                        print(f"[*] Stage E: Last resort! Fixing at {int(frame_range_2[0])} frame. Searching quality in [{quality_range_2[0]}, {quality_range_2[1]}]...")
-                        final_frames = select_frames(final_frames, 1)
-                        best_q, best_s = self._binary_search(final_frames, SIZE_TARGET_RANGE, quality_range_2, size_4_this_quality)
+                        # Stage C: Binary search on frame_range_2
+                        logger.info("Stage C: Still too big. Fixing quality at %s. Searching frames in [%s, %s]...", fallback_quality, frame_range_2[0], frame_range_2[1])
+                        self.final_quality = fallback_quality # update global final quality (binary search uses this, so needs to be updated)
+                        best_f, best_s, best_buff = self._binary_search(final_frames, size_target_range, frame_range_2, 'frame')
                         
-                        if best_q:
-                            print(f"-> ☑️ ⚠️ Extreme compression: 1 frame, Q={best_q}, size {best_s / 1024:.1f}KB.")
+                        if best_f is not None:
+                            buffer = best_buff
+                            logger.info("Found solution in Stage C: %s frames, size %.1fKB.", best_f, best_s / 1024)
                         else:
-                            # If it still fails set quality 1
-                            final_quality = 1
-                            successful_buffer = self._create_webp_buffer(final_frames, final_quality, 1/original_duration)
-                            current_size = successful_buffer.getbuffer().nbytes if successful_buffer else float('inf')
-                            print(f"->⚠️ Extreme compression: 1 frame, Q=1, size {current_size / 1024:.1f}KB.")
+                            # Stage D: Binary search on quality_range_2
+                            logger.info("Stage D: Last resort! Fixing at %s frame. Searching quality in [%s, %s]...", frame_range_2[0], quality_range_2[0], quality_range_2[1])
+                            stage_d_frames = self.select_frames(final_frames, frame_range_2[0]) # fixed frames to search for quality
+                            best_q, best_s, best_buff = self._binary_search(stage_d_frames, size_target_range, quality_range_2, 'quality')
+                            
+                            if best_q is not None:
+                                buffer = best_buff
+                                logger.info("Found solution in Stage D: Q=%s, size %.1fKB.", best_q, best_s / 1024)
+                            else:
+                                # If it still fails, log error and return
+                                logger.error("Could not produce a WebP file under the size limit after all optimizations.")
+                                return False
 
-        # ======== Step 3: Final Save ==========
-        try:
-            if successful_buffer:
-                print(f"\nSaving final WebP to '{webp_path}'...")
-                with open(webp_path, 'wb') as f:
-                    f.write(successful_buffer.getvalue())
-                return True
-            else:
-                # If the buffer is STILL empty after all stages, the conversion failed.
-                raise ValueError("Could not produce a WebP file under the size limit after all optimizations.")
+        # ========== Save the webp file =========
+        try:  
+            # Ensure output directory exists
+            output_dir = os.path.dirname(webp_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
 
+            # Save the final buffer to the output file
+            logger.info("Writing final WebP to '%s'... ", webp_path)
+            with open(webp_path, 'wb') as f:
+                f.write(buffer.getvalue())
+            return True
+            
         except Exception as e:
             raise IOError(f"Final WebP saving failed: {e}")
         
         finally:
             end_time = time.monotonic()
             duration = end_time - start_time
-            print(f"⌛ Total time taken: {duration:.2f} seconds.\n")
-
+            logger.info("Total time taken: %.2f seconds.", duration)
 
 def convert_video_to_webp(video_path: str, webp_path: str, 
-                        width: int = -1, height: int = -1, 
-                        quality: int = 80,
-                        keep_aspect: bool = True,
-                        allow_upscale: bool = True,
-                        pad: bool = True) -> bool:
+                       width: int = -1, height: int = -1, 
+                       quality: int = 40,
+                       frame_cap: bool = True,
+                       max_frames: int = 180,
+                       max_size: int = None,
+                       keep_aspect: bool = True,
+                       allow_upscale: bool = True,
+                       pad: bool = True,
+                       fps: float = 30.0, 
+                       preserve_timing: bool = True,
+                       compress_faster: bool = False
+                       ) -> bool:
     """
-    Simple function to convert a video file to animated WebP with automatic timing preservation.
+    Convert video file to WebP with various customizable settings.
     
     Args:
         video_path: Path to input video file
         webp_path: Path to output WebP file
         width: Output width in pixels (default: Original)
         height: Output height in pixels (default: Original)
-        quality: WebP quality 0-100 (default: 80)
+        quality: WebP quality 0-100 (default: 40)
+        frame_cap: Whether to cap the number of frames (default: True)
+        max_frames: Maximum number of frames to render (default: 180). Ignored if frame cap is disabled.
+        max_size: Maximum file size in kilobytes (default: None). This will compress the WebP by reducing quality and number of frames to meet the target size.
         keep_aspect: Preserve original aspect ratio (default True).
         allow_upscale: Allow enlarging smaller sources to meet target (default True).
         pad: When keep_aspect=True, pad with transparent canvas to fill target if True (default).
             If False, use cover+center-crop mode instead.
-
-    Returns:
-        True if conversion successful, False otherwise
+        fps: Target frames per second (ignored if preserve_timing=True, default: 30)
+        preserve_timing: Automatically preserve original animation timing (default: True)
+        compress_faster: Compress faster by using a range max cap of 75% to max size for faster processing rather than rigid max_cap (default False).
         
+    Returns:
+        True if conversion successful, False otherwise       
     """
-    converter = VideoToWebPConverter(width, height, quality, 
-                                     keep_aspect, allow_upscale, pad)
+    converter = VideoToWebPConverter(width, height, quality, frame_cap, max_frames, max_size, keep_aspect, allow_upscale, pad, fps, preserve_timing, compress_faster)
     try:
         return converter.convert(video_path, webp_path)
     except Exception as e:
-        print(f"Error during conversion: {e}")
+        logger.error("Error during conversion: %s", e)
         return False
 
-
+# CLI usage
 if __name__ == "__main__":
-    import argparse, sys
+    import sys, argparse, pathlib
 
+    # Configure logging
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    logger_name = pathlib.Path(__file__).stem
+    logger = logging.getLogger(logger_name)
+    
     parser = argparse.ArgumentParser(
-        description="Convert video files (WebM, MP4, etc.) to animated WebP.",
+        description="Convert various video formats (WebM, MP4, MKV, MOV, GIF, etc.) to WebP.",
+        # This helps in formatting the help text nicely
         formatter_class=argparse.RawTextHelpFormatter
     )
 
@@ -513,19 +644,32 @@ if __name__ == "__main__":
     parser.add_argument("input_file", help="Path to the input video file.")
     parser.add_argument("output_file", help="Path for the output WebP file.")
 
-    # Optional arguments
+    # Optional arguments with default values
     parser.add_argument("--width", type=int, default=-1, help="Output width in pixels. Default: Original.")
     parser.add_argument("--height", type=int, default=-1, help="Output height in pixels. Default: Original.")
-    parser.add_argument("--quality", type=int, default=80, help="WebP quality (0-100). Default: 80.")
+    parser.add_argument("--quality", type=int, default=40, help="WebP quality (0-100). Default: 40.")
+    parser.add_argument("--max-frames", type=int, default=180, 
+                        help="Maximum number of frames to render. Default: 180.\n(Note: This is ignored if you disable frame capping).")
+    parser.add_argument("--max-size", type=int, default=None,
+                        help="Maximum file size in kilobytes. Default: None.\n(Note: This will compress the WebP file to meet the target size by reducing quality and number of frames).")
+    parser.add_argument("--fps", type=float, default=30.0,
+                        help="Frames per second. \n(Note: This is ignored by default unless you use --no-preserve-timing).")
 
-    # Aspect / upscaling / padding controls
+    # arguments with a default a boolean flag
+    parser.add_argument("--no-frame-cap", dest="frame_cap", action="store_false",
+                        help="Disable capping the number of frames. By default frames are capped at 180.")
     parser.add_argument("--no-keep-aspect", dest="keep_aspect", action="store_false",
                         help="Disable preserving aspect ratio (stretch the image).")
     parser.add_argument("--no-upscale", dest="allow_upscale", action="store_false",
-                        help="Disable upscaling (do not enlarge source). Default is to allow upscaling.")
+                        help="Disable upscaling (do not enlarge source).")
     parser.add_argument("--crop", dest="pad", action="store_false",
-                        help="When keeping aspect, use crop instead of padding with transparency.")
+                        help="When keeping aspect, use crop instead of padding.")
+    parser.add_argument("--no-preserve-timing", action="store_false", dest="preserve_timing",
+                        help="Disable automatic timing preservation to use the manual FPS value.")
+    parser.add_argument("--fast", dest="compress_faster", action="store_true",
+                        help="Enable faster compression by using a range target of 75%% to max size. Disabled by default.")
 
+    # Let argparse handle the arguments
     args = parser.parse_args()
 
     # Call the main function with the parsed arguments
@@ -535,13 +679,19 @@ if __name__ == "__main__":
         width=args.width,
         height=args.height,
         quality=args.quality,
+        frame_cap=args.frame_cap,
+        max_frames=args.max_frames,
+        max_size=args.max_size,
         keep_aspect=args.keep_aspect,
         allow_upscale=args.allow_upscale,
         pad=args.pad,
+        fps=args.fps,
+        preserve_timing=args.preserve_timing,
+        compress_faster=args.compress_faster
     )
 
     if success:
-        print(f"✅ Successfully converted {args.input_file} to {args.output_file}")
+        logger.info("Successfully converted %s to %s", args.input_file, args.output_file)
     else:
-        print(f"❌ Failed to convert {args.input_file}")
+        logger.error("Failed to convert %s", args.input_file)
         sys.exit(1)

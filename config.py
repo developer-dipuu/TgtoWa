@@ -36,6 +36,8 @@ SUPPORT_GROUP = os.getenv("SUPPORT_GROUP")
 # ------ Sticker/emoji pack constraints ------
 # dont change these
 MAX_STICKERS_PER_PACK = 30
+MAX_WEBP_SIZE_KB = 495 # maximum size of each WEBP sticker in kilobytes
+MAX_WEBP_FRAMES = 30 # frame cap for a WEBP sticker
 WEBP_QUALITY = 80  # Default quality at the start of the compression
 MAX_ICON_SIZE = 50 * 1024      # 50KB
 STICKER_DIMENSIONS = (512, 512)

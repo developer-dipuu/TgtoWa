@@ -31,15 +31,23 @@ class StickerConverter:
         # Build command: python script.py input output --width 512 ...
         
         try:
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
+            args = [
                 script_path,
                 input_path,
                 output_path,
                 "--width", str(STICKER_DIMENSIONS[0]),
                 "--height", str(STICKER_DIMENSIONS[1]),
                 "--quality", str(WEBP_QUALITY)
-            )
+                ]
+
+            if script_name in {'video_to_webp.py', 'tgs_to_webp.py'}:
+                args.extend([
+                    "--max-frames", str(MAX_WEBP_FRAMES),
+                    "--max-size", str(MAX_WEBP_SIZE_KB),
+                    "--fast"
+                    ])
+
+            process = await asyncio.create_subprocess_exec(sys.executable, *args)
             
             try:
                 # Wait for the process to finish with a timeout

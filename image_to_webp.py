@@ -6,7 +6,10 @@ Converts static images (PNG, JPG, etc.) to WebP format.
 
 import argparse
 import sys
+import logging
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 def convert_image_to_webp(input_path: str, output_path: str, 
                          width: int = 512, height: int = 512, 
@@ -38,13 +41,23 @@ def convert_image_to_webp(input_path: str, output_path: str,
             # Save as WebP
             new_img.save(output_path, 'WEBP', quality=quality)
             
-        print(f"✅ Successfully converted {input_path} to {output_path}")
+        logger.info("Successfully converted %s to %s", input_path, output_path)
         return True
     except Exception as e:
-        print(f"❌ Failed to convert {input_path}: {e}")
+        logger.error("Failed to convert %s: %s", input_path, e)
         return False
 
 if __name__ == "__main__":
+    import pathlib
+    
+    # Configure logging
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    logger_name = pathlib.Path(__file__).stem
+    logger = logging.getLogger(logger_name)
+
     parser = argparse.ArgumentParser(
         description="Convert static images to WebP.",
         formatter_class=argparse.RawTextHelpFormatter
