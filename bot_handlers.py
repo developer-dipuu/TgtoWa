@@ -102,6 +102,7 @@ class BotHandlers:
         self.client.add_event_handler(self.commands_command, events.NewMessage(pattern='/commands', func=lambda e: e.is_private))
         self.client.add_event_handler(self.contact_command, events.NewMessage(pattern='/contact', func=lambda e: e.is_private))
         self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.id_command, events.NewMessage(pattern=r'/id(?:$|\s.*)', func=lambda e: e.is_private))
 
         # Group Handlers
         # self.client.add_event_handler(self.suggest_command, events.NewMessage(pattern='/suggest@'+ username_regex + r'(?:$|\s.*)', func=lambda e: not e.is_private))
@@ -120,7 +121,6 @@ class BotHandlers:
         self.client.add_event_handler(self.send_command, events.NewMessage(pattern=r'/send(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.gstats_command, events.NewMessage(pattern=r'/gstats', func=lambda e: db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.getdb_command, events.NewMessage(pattern='/getdb', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
-        self.client.add_event_handler(self.id_command, events.NewMessage(pattern=r'/id(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.getlogs_command, events.NewMessage(pattern='/getlogs', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.toggle_cache_command, events.NewMessage(pattern='/togglecache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.clearcache_command, events.NewMessage(pattern=r'/clearcache', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
