@@ -865,7 +865,7 @@ async def manage_premium_duration(user_id: int, admin_id: int, action: str, days
             # get payment_id
             payment_id = None
             if payment_info:
-                if action.startswith('extend'):
+                if action == 'extended':
                     metadata = payment_info.get('metadata', {})
                     metadata_str = metadata if isinstance(metadata, str) else json.dumps(metadata) if metadata else "{}"
                     # create new payment entry for extends
@@ -938,7 +938,7 @@ async def deduct_premium_by_payment_id(payment_id: int, user_id: int, admin_id: 
         # if days to be deducted > days left, then remove
         # (we ignore hours, minutes, seconds as if days to be deducted is even 1 more it'll cover those things)
         if duration_days > (prev_expiry - now).days:
-            reason = (reason + " | " if reason else "") + f"deduct({duration_days}) > duration left"
+            reason = (reason + " | " if reason else "") + "deduct > duration left"
             expiry = await remove_premium(user_id, admin_id, payment_id, reason=reason, conn=conn)
         # otherwise we have atleat sometime left so deduct
         else:
@@ -1024,7 +1024,7 @@ async def update_payment_status(payment_id: int, status: str, actor_type: str, a
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     """
     if conn is None:
-        async with _pool.acquire() as conn:
+        async with _pool.acquire() as conn, conn.transaction():
             payment_info = await conn.fetchrow(update_query, status, metadata_str, now, payment_id)
 
             if payment_info is None:
@@ -1035,15 +1035,16 @@ async def update_payment_status(payment_id: int, status: str, actor_type: str, a
                 actor_type, actor_id, payment_info['old_metadata'], metadata_str, reason, now
             )
     else:
-        payment_info = await conn.fetchrow(update_query, status, metadata_str, now, payment_id)
-    
-        if payment_info is None:
-            raise ValueError(f"Payment not found for payment_id {payment_id}")
+        async with conn.transaction():
+            payment_info = await conn.fetchrow(update_query, status, metadata_str, now, payment_id)
+        
+            if payment_info is None:
+                raise ValueError(f"Payment not found for payment_id {payment_id}")
 
-        await conn.execute(history_query,
-            payment_id, payment_info['user_id'], payment_info['old_status'], status, 
-            actor_type, actor_id, payment_info['old_metadata'], metadata_str, reason, now
-        )
+            await conn.execute(history_query,
+                payment_id, payment_info['user_id'], payment_info['old_status'], status, 
+                actor_type, actor_id, payment_info['old_metadata'], metadata_str, reason, now
+            )
 
     
 async def record_payment(payment_info: dict, days: int, reason: str):

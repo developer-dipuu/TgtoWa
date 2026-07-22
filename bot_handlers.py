@@ -3017,7 +3017,8 @@ class BotHandlers:
                     elif deduction_info['action'] == 'removed':
                         message_text += f"<tg-emoji emoji-id='6296367896398399651'>✅</tg-emoji> Premium access was deducted from user {target_user_id}. Since user had premium duration left less than {payment['duration_days']} days, user is no longer premium.\n\n"
                     else:
-                        message_text += f"<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> Failed to deduct premium for user {target_user_id} with charge ID {charge_id}: <pre>{str(e)}</pre>\n\n"
+                        error = deduction_info.get('error', 'Unknown error')
+                        message_text += f"<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> Failed to deduct premium for user {target_user_id} with charge ID {charge_id}: <pre>{str(error)}</pre>\n\n"
             
             # if refund failed
             else:
@@ -3087,7 +3088,7 @@ class BotHandlers:
             raise StopPropagation
             
         try:
-            expiry = await db.add_premium(target_user.id, target_user.username, event.sender_id, duration_days)
+            expiry = await db.add_premium(target_user.id, target_user.username, event.sender_id, duration_days, reason="added by admin")
         except OverflowError as e:
             logger.error(f"An error has occurred while adding {target_user.id} to premium by {event.sender_id}. Error: {e}")
             await event.reply("❌ Duration is too long.")
@@ -3124,7 +3125,7 @@ class BotHandlers:
             raise StopPropagation
 
         try: 
-            await db.remove_premium(target_user.id, event.sender_id)
+            await db.remove_premium(target_user.id, event.sender_id, reason="removed by admin")
             full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
             await event.reply(f"✅ Premium status for **{full_name}** (`{target_user.id}`) has been revoked.")
             logger.info(f"Premium of user {target_user.id} has been revoked by admin: {event.sender_id}")
@@ -3159,7 +3160,7 @@ class BotHandlers:
         
         days_to_add = int(days_arg)
         try:
-            new_expiry = await db.manage_premium_duration(target_user.id, event.sender_id, 'extended', days_to_add)
+            new_expiry = await db.manage_premium_duration(target_user.id, event.sender_id, 'extended', days_to_add, reason="extended by admin")
         except OverflowError as e:
             await event.reply("❌ Duration is too long.")
             raise StopPropagation
@@ -3208,7 +3209,7 @@ class BotHandlers:
 
         if int(days_arg) > current_days_left:
             try:
-                await db.remove_premium(target_user.id, event.sender_id)
+                await db.remove_premium(target_user.id, event.sender_id, reason="deducted by admin | deduct > duration left")
                 await event.reply(f"✅ Since **{full_name}** had only `{current_days_left + 1}` days of premium left, they have been **removed** from premium.")
                 logger.info(f"Premium of user {target_user.id} has been revoked by admin: {event.sender_id}")
             except ValueError as e:
@@ -3221,7 +3222,7 @@ class BotHandlers:
 
         days_to_deduct = -abs(int(days_arg)) # Ensure it's a negative number
         try:
-            new_expiry = await db.manage_premium_duration(target_user.id, event.sender_id, 'deducted', days_to_deduct)
+            new_expiry = await db.manage_premium_duration(target_user.id, event.sender_id, 'deducted', days_to_deduct, reason="deducted by admin")
         except OverflowError as e:
             await event.reply("❌ Duration is too long.")
             raise StopPropagation

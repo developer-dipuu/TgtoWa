@@ -119,6 +119,13 @@ class PaymentManager:
         amount = action.total_amount
         metadata=action.to_json()
         
+        # check duplicate payment
+        existing = await db.get_payment_by_transaction_id(charge_id)
+        if existing:
+            logger.warning(f"Duplicate payment event for charge ID: {charge_id}, ignoring")
+            return
+
+        
         logger.info(f"Stars payment received from user {user_id}: {amount} XTR for payload {payload}")
         logger.info(f"CHARGE ID: {charge_id}")
         
@@ -176,7 +183,10 @@ class PaymentManager:
                 parse_mode='html'
             )
             # send payment success notification to owner
-            await self.notification_manager.send_premium_purchase(user_id, get_user_display_name(user), payment_info, duration_days)
+            try:
+                await self.notification_manager.send_premium_purchase(user_id, get_user_display_name(user), payment_info, duration_days)
+            except Exception as e: 
+                logger.error(f"Error sending premium purchase notification to owner: {e}")
         except Exception as e:
             logger.error(f"Error granting premium to {user_id} after Stars payment: {e}")
 
@@ -185,21 +195,30 @@ class PaymentManager:
             try:
                 await db.record_payment(payment_info, 0, "premium purchase (failed)")
                 record_success = True
-            except Exception as e:
-                logger.error(f"Error recording payment with charge ID: {charge_id} for user {user_id}: {e}")
+            except Exception as e1:
+                logger.error(f"Error recording payment with charge ID: {charge_id} for user {user_id}: {e1}")
             
             # refund the payment 
             refund_success = False
             try:
-                await self.refund(user_id, SYSTEM_USER_ID, charge_id, "system", SYSTEM_USER_ID, "refunded due to premium purchase failed", deduct=False, no_db=False)
+                await self.refund(user_id, SYSTEM_USER_ID, charge_id, "system", SYSTEM_USER_ID, "refunded due to premium purchase failed", deduct=False, no_db=(not record_success))
                 refund_success = True
-                await self.client.send_message(user_id, "<tg-emoji emoji-id='5420323339723881652'>⚠️</tg-emoji> Payment received, but an error occurred while upgrading your account.\n<b>We have refunded the payment.</b>\nPlease contact support via <b>/contact</b>.", parse_mode='html')
-            except Exception as e:
-                await self.client.send_message(user_id, "<tg-emoji emoji-id='5420323339723881652'>⚠️</tg-emoji> Payment received, but an error occurred while upgrading your account. Please contact support via <b>/contact</b>.", parse_mode='html')
-                logger.error(f"Error refunding payment with charge ID: {charge_id} for user {user_id}: {e}")
+                try:
+                    await self.client.send_message(user_id, "<tg-emoji emoji-id='5420323339723881652'>⚠️</tg-emoji> Payment received, but an error occurred while upgrading your account.\n<b>We have refunded the payment.</b>\nPlease contact support via <b>/contact</b>.", parse_mode='html')
+                except Exception as e2_1:
+                    logger.error(f"Error sending refund message to user {user_id}: {e2_1}")
+            except Exception as e2:
+                logger.error(f"Error refunding payment with charge ID: {charge_id} for user {user_id}: {e2}")
+                try:
+                    await self.client.send_message(user_id, "<tg-emoji emoji-id='5420323339723881652'>⚠️</tg-emoji> Payment received, but an error occurred while upgrading your account. Please contact support via <b>/contact</b>.", parse_mode='html')
+                except Exception as e2_1:
+                    logger.error(f"Error sending premium grant failed notification to user {user_id}: {e2_1}")
 
             # send premium grant failed notification to owner
-            await self.notification_manager.send_premium_grant_failed(user_id, payment_info, record_success, refund_success, str(e))
+            try:
+                await self.notification_manager.send_premium_grant_failed(user_id, payment_info, record_success, refund_success, str(e))
+            except Exception as e3: 
+                logger.error(f"Error sending premium grant failed notification to owner: {e3}")
 
 
     async def refund(self, user_id: int, admin_id: int, charge_id: str, actor_type: str, actor_id: int,
