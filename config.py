@@ -112,6 +112,16 @@ NOTIFICATIONS = {
         "enabled": True,
         "mention_admins": True,
     },
+    # For new premium purchases.
+    "premium_purchase_success": {
+        "enabled": True,
+        "mention_admins": True,
+    },
+    # For when the bot fails to add premium after successful payment.
+    "premium_grant_failed": {
+        "enabled": True,
+        "mention_admins": True,
+    },
     # For when caching is enabled but all cache channels are full.
     "cache_channels_full": {
         "enabled": True,
@@ -152,6 +162,10 @@ PREMIUM_PRICE_MONTHLY = 0.5
 PREMIUM_PRICE_YEARLY = 5
 PREMIUM_SAVINGS_PERCENT = math.floor((1 - (PREMIUM_PRICE_YEARLY / (PREMIUM_PRICE_MONTHLY * 12))) * 100)
 
+# ----- Telegram Stars Pricing ------
+PREMIUM_STARS_MONTHLY = 5   # Approximate equivalent of $0.50
+PREMIUM_STARS_YEARLY = 7   # Approximate equivalent of $5.00
+
 # ------ Daily Conversion Limits ------
 # Set to 0 or a negative number for unlimited conversions.
 DAILY_LIMIT_REGULAR = 10
@@ -186,12 +200,6 @@ You have two simple options:
 
 ---
 
-<tg-emoji emoji-id="5296739894914207637">✨</tg-emoji> <b>Explore More Features</b>
-<blockquote>• Use /commands to see a full list of all available commands.
-• Use /premium to check your premium status and learn about the benefits.</blockquote>
-
----
-
 <tg-emoji emoji-id="5334998226636390258">👉</tg-emoji> <b>How to Add Stickers to WhatsApp</b>
 
 1. <tg-emoji emoji-id="5256186019136421048">📱</tg-emoji> <b>Install the App</b>: 
@@ -207,6 +215,12 @@ You have two simple options:
 <blockquote>Choose to open the file with the <b>Sticker Maker</b> app. Inside the app, tap "Add to my library" and then "Add to WhatsApp".
 </blockquote>
 That's it, your stickers are ready!
+
+---
+
+<tg-emoji emoji-id="5296739894914207637">✨</tg-emoji> <b>Explore More Features</b>
+<blockquote>• Use /commands to see a full list of all available commands.
+• Use /premium to check your premium status and learn about the benefits.</blockquote>
 
 ---
 

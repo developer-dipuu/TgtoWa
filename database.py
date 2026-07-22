@@ -2,6 +2,7 @@
 import asyncpg
 import logging
 import os
+import math
 import json
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -130,17 +131,83 @@ async def init_db():
                     )
                 """)
                 
+                # Create payment_status enum
+                await conn.execute("""
+                    DO $$ BEGIN
+                        CREATE TYPE payment_status AS ENUM ('pending', 'success', 'refunded', 'failed');
+                    EXCEPTION
+                        WHEN duplicate_object THEN null;
+                    END $$;
+                """)  
+
+                # For storing payments
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS payments (
+                        payment_id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        payment_method VARCHAR(50) DEFAULT 'manual' NOT NULL,
+                        transaction_id TEXT UNIQUE,
+                        amount INTEGER,
+                        currency VARCHAR(10),
+                        status payment_status DEFAULT 'pending' NOT NULL, 
+                        duration_days INTEGER NOT NULL,
+                        is_deducted BOOLEAN DEFAULT FALSE NOT NULL,
+                        metadata JSONB DEFAULT '{}' NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+                    )
+                """)
+
+                # Create actor_type enum
+                await conn.execute("""
+                    DO $$ BEGIN
+                        CREATE TYPE actor_type AS ENUM ('user', 'admin', 'system');
+                    EXCEPTION
+                        WHEN duplicate_object THEN null;
+                    END $$;
+                """)  
+
+                # For storing payment history (logs of payment status changes)
+                await conn.execute("""
+                CREATE TABLE IF NOT EXISTS payment_history
+                (
+                    history_id SERIAL PRIMARY KEY,
+                    payment_id INTEGER NOT NULL REFERENCES payments(payment_id) ON DELETE CASCADE,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    previous_status payment_status,
+                    new_status payment_status DEFAULT 'pending' NOT NULL, 
+                    actor_type actor_type NOT NULL,
+                    actor_id BIGINT,
+                    old_metadata JSONB,
+                    new_metadata JSONB,
+                    reason TEXT,
+                    action_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+                )
+                """)
+
+                # Create premium_history_action enum
+                await conn.execute("""
+                    DO $$ BEGIN
+                        CREATE TYPE premium_history_action AS ENUM ('added', 'removed', 'extended', 'deducted', 'refunded', 'expired');
+                    EXCEPTION
+                        WHEN duplicate_object THEN null;
+                    END $$;
+                """)  
+
+
                 # premium_history table
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS premium_history (
                         history_id SERIAL PRIMARY KEY,
                         admin_id BIGINT NOT NULL,
                         target_user_id BIGINT NOT NULL,
-                        action TEXT NOT NULL,
+                        payment_id INTEGER REFERENCES payments (payment_id) ON DELETE SET NULL,
+                        action premium_history_action NOT NULL, 
                         duration_change_days INTEGER,
                         previous_expiry_date TIMESTAMP WITH TIME ZONE,
                         new_expiry_date TIMESTAMP WITH TIME ZONE,
-                        action_time TIMESTAMP WITH TIME ZONE NOT NULL
+                        reason TEXT,
+                        action_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
                     )
                 """)
 
@@ -329,7 +396,7 @@ async def init_db():
                     CREATE INDEX IF NOT EXISTS idx_cached_packs_score ON cached_packs (cache_score)
                 """)
                 
-                # Speeds up the daily premium user cleanup job and /gstats list
+                # For cheking premium duaration left or managing premium /gstats list and daily premium user cleanup job
                 await conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_premium_users_expiry_date ON premium_users (expiry_date)
                 """)
@@ -632,53 +699,110 @@ async def remove_admin(user_id: int, demoted_by: int) -> bool:
 
 ############# Premium User Management ############
 
-async def add_premium(user_id: int, username: str, duration_days: int, added_by: int) -> bool:
-    """Strictly only adds a user to premium. If you want to extend premium use manage_premium_duration"""
-    now = utcnow()
-    expiry_date = now + timedelta(days=duration_days)
-    async with _pool.acquire() as conn, conn.transaction():
-        inserted = await conn.fetchval(
-            """
-            INSERT INTO premium_users (user_id, username, added_by, start_date, expiry_date) 
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (user_id) DO UPDATE SET
-                username = EXCLUDED.username,
-                added_by = EXCLUDED.added_by,
-                start_date = EXCLUDED.start_date,
-                expiry_date = EXCLUDED.expiry_date
-            WHERE premium_users.expiry_date <= EXCLUDED.start_date
-            RETURNING 1
-            """,
-            user_id, username, added_by, now, expiry_date
-        )
-        # Log to history with all details
-        if inserted:
-            await conn.execute(
-                "INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days, previous_expiry_date, new_expiry_date, action_time) VALUES ($1, $2, 'added', $3, NULL, $4, $5)",
-                added_by, user_id, duration_days, expiry_date, now
-            )
-            return True
-    return False
 
-async def remove_premium(user_id: int, admin_id: int) -> bool:
-    """Removes a user's premium subscription."""
+async def add_premium(user_id: int, username: str, admin_id: int, days: int, reason: str | None = None, 
+                    payment_info: dict | None = None, conn: asyncpg.Connection | None = None) -> datetime:
+    """Strictly only adds a user to premium if not already premium and logs the action. If you want to extend premium use manage_premium_duration.
+    Expected payment_info format: {
+        'user_id': int,
+        'payment_method': str,
+        'transaction_id': str,
+        'amount': int,
+        'currency': str,
+        'status': str,
+        'metadata': str | dict | None = None
+    }
+    Raises ValueError if the user is already premium.
+    """
     now = utcnow()
-    async with _pool.acquire() as conn, conn.transaction():
-        # Delete and get the current expiry date
-        prev_expiry = await conn.fetchval(
-            "DELETE FROM premium_users WHERE user_id = $1 and expiry_date > NOW() RETURNING expiry_date", user_id
-        )
-        
-        # Log the removal action
-        if prev_expiry:
-            await conn.execute("""
-                INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days,
-                                            previous_expiry_date, new_expiry_date, action_time)
-                VALUES ($1, $2, 'removed', NULL, $3, NULL, $4)
-            """, admin_id, user_id, prev_expiry, now
+    expiry_date = now + timedelta(days=days)
+    
+    opened_here = False
+    if conn is None:
+        conn = await _pool.acquire()
+        opened_here = True
+    
+    try:
+        async with conn.transaction():
+            inserted = await conn.fetchval(
+                """
+                INSERT INTO premium_users (user_id, username, added_by, start_date, expiry_date) 
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    username = EXCLUDED.username,
+                    added_by = EXCLUDED.added_by,
+                    start_date = EXCLUDED.start_date,
+                    expiry_date = EXCLUDED.expiry_date
+                WHERE premium_users.expiry_date <= EXCLUDED.start_date
+                RETURNING 1
+                """,
+                user_id, username, admin_id, now, expiry_date
             )
-            return True
-    return False
+            if not inserted:
+                raise ValueError(f"User {user_id} is already premium")
+            # Log to history with all details
+            payment_id = None
+            if payment_info:
+                metadata = payment_info.get('metadata', {})
+                metadata_str = metadata if isinstance(metadata, str) else json.dumps(metadata) if metadata else "{}"
+                
+                payment_id = await conn.fetchval(
+                    """
+                    INSERT INTO payments (user_id, payment_method, transaction_id, amount, currency, status, duration_days, metadata)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING payment_id
+                    """, 
+                    payment_info['user_id'], payment_info['payment_method'], payment_info['transaction_id'], 
+                    payment_info['amount'], payment_info['currency'], payment_info['status'], days, metadata_str
+                )
+                
+                # add to payment history
+                await conn.execute("""
+                    INSERT INTO payment_history (payment_id, user_id, previous_status, new_status, actor_type, actor_id, old_metadata, new_metadata, reason, action_time)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                """,
+                payment_id, payment_info['user_id'], "pending", payment_info['status'], "user",
+                payment_info['user_id'], None, metadata_str, reason, now
+                )
+            await conn.execute(
+                """INSERT INTO premium_history 
+                (admin_id, target_user_id, payment_id, action, duration_change_days, previous_expiry_date, new_expiry_date, reason, action_time) 
+                VALUES ($1, $2, $3, 'added', $4, NULL, $5, $6, $7)""",
+                admin_id, user_id, payment_id, days, expiry_date, reason, now
+            )
+            return expiry_date
+    finally:
+        if opened_here:
+            await _pool.release(conn)
+
+async def remove_premium(user_id: int, admin_id: int, payment_id: int | None = None, reason: str | None = None, conn: asyncpg.Connection | None = None) -> None:
+    """Removes a user's premium subscription and logs the action."""
+    now = utcnow()
+    opened_here = False
+    if conn is None:
+        conn = await _pool.acquire()
+        opened_here = True
+    try:
+        async with conn.transaction():
+            # Delete and get the current expiry date
+            prev_expiry = await conn.fetchval(
+                "DELETE FROM premium_users WHERE user_id = $1 and expiry_date > $2 RETURNING expiry_date", user_id, now
+            )
+            
+            if not prev_expiry:
+                raise ValueError(f"User {user_id} is not premium.")
+            # Log the removal action
+
+            duration_days = math.ceil((prev_expiry - now).total_seconds() / 86400)
+
+            await conn.execute("""
+                INSERT INTO premium_history (admin_id, target_user_id, payment_id, action, duration_change_days,
+                                            previous_expiry_date, new_expiry_date, reason, action_time)
+                VALUES ($1, $2, $3, 'removed', $4, $5, NULL, $6, $7)
+            """, admin_id, user_id, payment_id, -duration_days, prev_expiry, reason, now
+            )
+    finally:
+        if opened_here:
+            await _pool.release(conn)
     
 async def get_premium_duration_left(user_id: int) -> Optional[timedelta]:
     """
@@ -694,35 +818,138 @@ async def get_premium_duration_left(user_id: int) -> Optional[timedelta]:
         return expiry_date - now
     return None
 
-async def manage_premium_duration(user_id: int, days: int, admin_id: int, action: str) -> datetime | None:
-    """Extends or deducts days from a premium subscription. 'days' can be negative for deduction."""
+async def manage_premium_duration(user_id: int, admin_id: int, action: str, days: int, reason: str | None = None,
+                        payment_info: dict | None = None, conn: asyncpg.Connection | None = None) -> datetime:
+    """Extends or deducts days from a premium subscription and logs the action. 'days' can be negative for deduction.
+    If payment_info is provided: for extend it creates a payment entry and uses its payment_id,
+    for deducts it uses the already given payment_id.
+    Expected payment_info format for extends: {
+        'user_id': int,
+        'payment_method': str,
+        'transaction_id': str,
+        'amount': int,
+        'currency': str,
+        'status': str,
+        'metadata': str | dict | None = None
+    }
+    Expected payment_info format for deducts: {'payment_id': int} and other params are ignored.
+    If payment_info is None, it is assumed that the action is not related to a payment.
+    Raises ValueError if user is not premium.
+    It uses an existing connection if provided, otherwise it acquires a new one from the pool and releases it at the end.
+    Returns the new expiry date.
+    """
+    now = utcnow()
+    opened_here = False
+    if conn is None:
+        conn = await _pool.acquire()
+        opened_here = True
+    try:
+        async with conn.transaction():
+            # update expiry and return old and new expiry
+            expiry = await conn.fetchrow("""
+                UPDATE premium_users
+                SET expiry_date = expiry_date + $1::interval
+                WHERE user_id = $2
+                AND expiry_date > $3
+                RETURNING expiry_date - $1::interval AS old_expiry,
+                expiry_date AS new_expiry
+            """, timedelta(days), user_id, now
+            )
+
+            if not expiry:
+                raise ValueError(f"User {user_id} is not premium.") # User is not premium, cannot extend/deduct
+            
+            old_expiry = expiry['old_expiry']
+            new_expiry = expiry['new_expiry']
+
+            # get payment_id
+            payment_id = None
+            if payment_info:
+                if action.startswith('extend'):
+                    metadata = payment_info.get('metadata', {})
+                    metadata_str = metadata if isinstance(metadata, str) else json.dumps(metadata) if metadata else "{}"
+                    # create new payment entry for extends
+                    payment_id = await conn.fetchval(
+                        """
+                        Insert INTO payments (user_id, payment_method, transaction_id, amount, currency, status, duration_days, metadata)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING payment_id
+                        """, 
+                        payment_info['user_id'], payment_info['payment_method'], payment_info['transaction_id'], 
+                        payment_info['amount'], payment_info['currency'], payment_info['status'], days, metadata_str
+                    )
+
+                    await conn.execute("""
+                        INSERT INTO payment_history (payment_id, user_id, previous_status, new_status, actor_type, actor_id, old_metadata, new_metadata, reason, action_time)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    """,
+                    payment_id, payment_info['user_id'], "pending", payment_info['status'], "user",
+                    payment_info['user_id'], None, metadata_str, reason, now
+                    )
+
+                else: # for deducts like manual or refunds
+                    # payment id should be included in payment_info (if given)
+                    payment_id = payment_info['payment_id']
+                    
+            # Log this action to premium_history
+            await conn.execute(
+                """INSERT INTO premium_history 
+                (admin_id, target_user_id, payment_id, action, duration_change_days, previous_expiry_date, new_expiry_date, reason, action_time) 
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                admin_id, user_id, payment_id, action, days, old_expiry, new_expiry, reason, now
+            )
+
+        return new_expiry
+    finally:
+        if opened_here:
+            await _pool.release(conn)
+
+async def deduct_premium_by_payment_id(payment_id: int, user_id: int, admin_id: int, reason: str | None = None) -> datetime | None:
+    """
+    Deducts premium from a user by payment id.
+    Raises ValueError if payment is not found, not successful, or already deducted.
+    Raises ValueError if user is not premium or user_id does not match.
+    Returns the new expiry date if deducted, None if user is no longer premium after deduction.
+    """
     now = utcnow()
     async with _pool.acquire() as conn, conn.transaction():
-        # update expiry and return old and new expiry
-        expiry = await conn.fetchrow("""
-            UPDATE premium_users
-            SET expiry_date = expiry_date + $1::interval
-            WHERE user_id = $2
-            AND expiry_date > $3
-            RETURNING expiry_date - $1::interval AS old_expiry,
-            expiry_date AS new_expiry
-        """, f'{days} days', user_id, now
-        )
+        payment_info = await conn.fetchrow("""
+        SELECT user_id, status, duration_days, is_deducted from payments
+        WHERE payment_id = $1
+        LIMIT 1
+        """, payment_id)
 
-        if not expiry:
-            return None # User is not premium, cannot extend/deduct
+        if not payment_info:
+            raise ValueError(f"Payment not found for payment_id {payment_id}")
+        if payment_info['is_deducted']:
+            raise ValueError(f"Already deducted, premium for payment_id {payment_id} has already been deducted.")
+        if payment_info['user_id'] != user_id:
+            raise ValueError(f"Payment {payment_id} isn't associated with user {user_id}.")
+        if payment_info['status'] in ('failed', 'pending'):
+            raise ValueError(f"Payment isn't successful, cannot deduct premium for payment ID: {payment_id}.")
         
-        old_expiry = expiry['old_expiry']
-        new_expiry = expiry['new_expiry']
+        prev_expiry = await conn.fetchval("""
+            SELECT expiry_date FROM premium_users WHERE user_id = $1 AND expiry_date > $2
+            """, user_id, now)
 
-        # Log this action to history
-        await conn.execute(
-            "INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days, previous_expiry_date, new_expiry_date, action_time) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            admin_id, user_id, action, days, old_expiry, new_expiry, now
-        )
+        if not prev_expiry:
+            raise ValueError(f"User {user_id} is currently not premium, cannot deduct.")
 
-    return new_expiry
-
+        duration_days = payment_info['duration_days']
+        # if days to be deducted > days left, then remove
+        # (we ignore hours, minutes, seconds as if days to be deducted is even 1 more it'll cover those things)
+        if duration_days > (prev_expiry - now).days:
+            reason = (reason + " | " if reason else "") + f"deduct({duration_days}) > duration left"
+            expiry = await remove_premium(user_id, admin_id, payment_id, reason=reason, conn=conn)
+        # otherwise we have atleat sometime left so deduct
+        else:
+            days = -duration_days
+            expiry = await manage_premium_duration(user_id, admin_id, 'deducted', days, reason=reason, payment_info={'payment_id': payment_id}, conn=conn)
+        
+        # mark as deducted
+        await conn.execute("UPDATE payments SET is_deducted = true, updated_at = $2 WHERE payment_id = $1", payment_id, now)
+        
+    return expiry
+            
 async def remove_expired_premium_users() -> int:
     """
     Finds and removes premium users whose subscriptions have expired.
@@ -746,17 +973,102 @@ async def remove_expired_premium_users() -> int:
 
         # Log expired users
         history_logs = [
-            (system_admin_id, u['user_id'], 'expired', None, u['expiry_date'], None, now)
+            (system_admin_id, u['user_id'], None, 'expired', None, u['expiry_date'], None, "Auto-removed: Subscription expired", now)
             for u in expired_users
         ]
         
         await conn.executemany("""
-            INSERT INTO premium_history (admin_id, target_user_id, action, duration_change_days,
-                                        previous_expiry_date, new_expiry_date, action_time)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO premium_history (admin_id, target_user_id, payment_id, action, duration_change_days,
+                                        previous_expiry_date, new_expiry_date, reason, action_time)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         """, history_logs)
   
     return len(expired_users)
+
+############### Payment Management ###################
+
+async def get_payment_by_transaction_id(transaction_id: str) -> asyncpg.Record | None:
+    return await _pool.fetchrow("""
+    SELECT * FROM payments WHERE transaction_id = $1
+    """, transaction_id)
+    
+async def update_payment_status(payment_id: int, status: str, actor_type: str, actor_id: int, reason: str | None = None, 
+                                metadata: str |dict | None = None, conn: asyncpg.Connection | None = None) -> None:
+    """
+    Updates the status of a payment and logs the change to the payment_history table.
+    Raises ValueError if payment not found.
+    """
+    metadata_str = metadata if isinstance(metadata, str) else json.dumps(metadata) if metadata else "{}"
+    now = utcnow()
+    update_query = """
+    WITH old_data AS (
+        SELECT status AS old_status, 
+            metadata AS old_metadata, 
+            user_id
+        FROM payments
+        WHERE payment_id = $4
+        FOR UPDATE
+    ),
+    updated_payment AS (
+        UPDATE payments
+        SET status = $1,
+            metadata = COALESCE($2, metadata),
+            updated_at = $3
+        WHERE payment_id = $4
+    )
+    SELECT old_status, old_metadata, user_id
+    FROM old_data
+    """
+    history_query = """
+        INSERT INTO payment_history (payment_id, user_id, previous_status, new_status, actor_type, actor_id, old_metadata, new_metadata, reason, action_time)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    """
+    if conn is None:
+        async with _pool.acquire() as conn:
+            payment_info = await conn.fetchrow(update_query, status, metadata_str, now, payment_id)
+
+            if payment_info is None:
+                raise ValueError(f"Payment not found for payment_id {payment_id}")
+
+            await conn.execute(history_query,
+                payment_id, payment_info['user_id'], payment_info['old_status'], status, 
+                actor_type, actor_id, payment_info['old_metadata'], metadata_str, reason, now
+            )
+    else:
+        payment_info = await conn.fetchrow(update_query, status, metadata_str, now, payment_id)
+    
+        if payment_info is None:
+            raise ValueError(f"Payment not found for payment_id {payment_id}")
+
+        await conn.execute(history_query,
+            payment_id, payment_info['user_id'], payment_info['old_status'], status, 
+            actor_type, actor_id, payment_info['old_metadata'], metadata_str, reason, now
+        )
+
+    
+async def record_payment(payment_info: dict, days: int, reason: str):
+    now = utcnow()
+    metadata = payment_info.get('metadata', {})
+    metadata_str = metadata if isinstance(metadata, str) else json.dumps(metadata) if metadata else "{}"
+
+    async with _pool.acquire() as conn, conn.transaction():
+        payment_id = await conn.fetchval(
+            """
+            INSERT INTO payments (user_id, payment_method, transaction_id, amount, currency, status, duration_days, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING payment_id
+            """, 
+            payment_info['user_id'], payment_info['payment_method'], payment_info['transaction_id'], 
+            payment_info['amount'], payment_info['currency'], payment_info['status'], days, metadata_str
+        )
+        
+        # add to payment history
+        await conn.execute("""
+            INSERT INTO payment_history (payment_id, user_id, previous_status, new_status, actor_type, actor_id, old_metadata, new_metadata, reason, action_time)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        """,
+        payment_id, payment_info['user_id'], "pending", payment_info['status'], "user",
+        payment_info['user_id'], None, metadata_str, reason, now
+        )
 
 ########## Ban Management ###########
 

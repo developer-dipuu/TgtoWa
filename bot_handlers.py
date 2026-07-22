@@ -28,6 +28,7 @@ from sticker_converter import StickerConverter
 from session_manager import session_manager, Flow, Session
 import database as db
 from notification_manager import NotificationManager
+from payment_manager import PaymentManager
 from utils import BackupManager
 
 SYSTEM_USER_ID = 0
@@ -45,6 +46,7 @@ class BotHandlers:
         self.network_task = NetworkTask(self.client)
         self.converter = StickerConverter(self.client)
         self.notification_manager = notification_manager
+        self.payment_manager = PaymentManager(self.client, self.notification_manager)
         self.backup_manager = BackupManager(self.client)
         self.processing_lock = asyncio.Lock()
         self.bot_username = f"@{bot_info.username}"
@@ -92,6 +94,9 @@ class BotHandlers:
         Registers all event handlers with the Telethon client.
         """
         username_regex = self.bot_username.lstrip('@')
+
+        # register payment handlers
+        self.payment_manager.register_handlers()
         
         # user commands (Private)
         self.client.add_event_handler(self.start_command, events.NewMessage(pattern='/start', func=lambda e: e.is_private))
@@ -114,8 +119,8 @@ class BotHandlers:
             self.client.add_event_handler(self.restricted_command_handler, events.NewMessage(pattern=rf"/{cmd}@{username_regex}(?:$|\s.*)", func=lambda e: not e.is_private))
 
         # owner commands
-        self.client.add_event_handler(self.promote_command, events.NewMessage(pattern=r'/promote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
-        self.client.add_event_handler(self.demote_command, events.NewMessage(pattern=r'/demote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private))
+        self.client.add_event_handler(self.promote_command, events.NewMessage(pattern=r'/promote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.demote_command, events.NewMessage(pattern=r'/demote(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.broadcast_command, events.NewMessage(pattern=r'/broadcast(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.broadcast_command, events.NewMessage(pattern=r'/broadcast@' + username_regex + r'(?:$|\s.*)', func=lambda e: not e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.send_command, events.NewMessage(pattern=r'/send(?:$|\s.*)', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
@@ -131,6 +136,7 @@ class BotHandlers:
         self.client.add_event_handler(self.done_command, events.NewMessage(pattern=r'/done', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.getjunk_command, events.NewMessage(pattern='/getjunk', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
         self.client.add_event_handler(self.clearjunk_command, events.NewMessage(pattern='/clearjunk', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
+        self.client.add_event_handler(self.refund_command, events.NewMessage(pattern=r'/refund(?:@\w+)?(?:\s+([@\w\d]+))?', func=lambda e: e.is_private and db.is_owner(e.sender_id)))
 
         # Premium commands (admin use)
         self.client.add_event_handler(self.add_premium_command, events.NewMessage(pattern=r'/addpremium(?:@\w+)?(?:\s+([@\w\d]+))?(?:\s+(\d+))?', func=lambda e: e.is_private))
@@ -1771,9 +1777,10 @@ class BotHandlers:
         benefits_message = (
             f"<b>Premium Benefits Include:</b>\n\n"
             f"<blockquote><tg-emoji emoji-id='5188481279963715781'>🚀</tg-emoji> <b>Priority Queue:</b> Your requests jump to the front of the line.</blockquote>\n"
-            f"<blockquote><tg-emoji emoji-id='5449683594425410231'>📈</tg-emoji> <b>Higher Daily Limit:</b> Convert up to <b>{DAILY_LIMIT_PREMIUM}</b> packs per day (vs. {DAILY_LIMIT_REGULAR} for regular users).</blockquote>\n"
-            f"<blockquote><tg-emoji emoji-id='5451882707875276247'>⚙️</tg-emoji> <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.</blockquote>\n"
             f"<blockquote><tg-emoji emoji-id='5370951118698339120'>✍️</tg-emoji> <b>Custom Pack Details:</b> Set your own custom title and author name for your packs.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5451882707875276247'>⚙️</tg-emoji> <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5258113901106580375'>⏳</tg-emoji> <b>Convert Large Packs:</b> Convert large packs containing more stickers/emojis than usual.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5449683594425410231'>📈</tg-emoji> <b>Higher Daily Limit:</b> Convert up to <b>{DAILY_LIMIT_PREMIUM}</b> packs per day (vs. {DAILY_LIMIT_REGULAR} for regular users).</blockquote>\n"
             f"<blockquote><tg-emoji emoji-id='5443038326535759644'>💬</tg-emoji> <b>Priority Support:</b> Get faster help in the support group.</blockquote>\n"
         )
 
@@ -1786,18 +1793,28 @@ class BotHandlers:
                 f"<tg-emoji emoji-id='5967522716062847679'>⭐</tg-emoji> <b>You have an active Premium subscription!</b>\n"
                 f"<i>Expires in: {days} days and {hours} hours.</i>\n\n"
             )
-        
+            buttons = [
+                [Button.inline(f"Extend for 1 Month ({PREMIUM_STARS_MONTHLY} ⭐)", b"extend_premium_30", style="success", icon=5366238787955347845)], 
+                [Button.inline(f"Extend for 1 Year ({PREMIUM_STARS_YEARLY} ⭐)", b"extend_premium_365", style="success", icon=5339520934573255920)],
+                [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.url("Contact Admin", SUPPORT_GROUP_LINK, style="primary", icon=5895457880710058528)]
+            ]
         else:
             status_message = (
                 f"<tg-emoji emoji-id='5472125180799098428'>😕</tg-emoji> <b>You are not a Premium user.</b>\n\n"
                 f"<b>Upgrade to unlock great features!</b>\n\n"
                 f"<b>Pricing:</b>\n"
-                f"  <tg-emoji emoji-id='5409048419211682843'>💵</tg-emoji> <b>${PREMIUM_PRICE_MONTHLY}</b> / month\n"
-                f"  <tg-emoji emoji-id='5224257782013769471'>💰</tg-emoji> <b>${PREMIUM_PRICE_YEARLY}</b> / year (<i>Save over {PREMIUM_SAVINGS_PERCENT}%</i>)\n\n"
-                f"<tg-emoji emoji-id='5337239271851960809'>✉️</tg-emoji>Contact an admin at <b>{SUPPORT_GROUP}</b> to get started.\n\n"
+                f"  <tg-emoji emoji-id='5954135079662916434'>⭐</tg-emoji><b>{PREMIUM_STARS_MONTHLY}</b> or <b>${PREMIUM_PRICE_MONTHLY}</b> / month\n"
+                f"  <tg-emoji emoji-id='5954135079662916434'>⭐</tg-emoji><b>{PREMIUM_STARS_YEARLY}</b> or <b>${PREMIUM_PRICE_YEARLY}</b> / year (<i>Save over {PREMIUM_SAVINGS_PERCENT}%</i>)\n\n"
+                f"<tg-emoji emoji-id='5337239271851960809'>✉️</tg-emoji> If you need to pay with other payment methods, contact us using <b>/contact</b> command or at <b>{SUPPORT_GROUP}</b>.\n\n"
             )
+            buttons = [
+                [Button.inline(f"Buy 1 Month ({PREMIUM_STARS_MONTHLY} ⭐)", b"buy_premium_30", style="success", icon=5366238787955347845)], 
+                [Button.inline(f"Buy 1 Year ({PREMIUM_STARS_YEARLY} ⭐)", b"buy_premium_365", style="success", icon=5339520934573255920)],
+                [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.url("Contact Admin", SUPPORT_GROUP_LINK, style="primary", icon=5895457880710058528)]
+        ]
+
         
-        return status_message + benefits_message
+        return status_message + benefits_message, buttons
 
 
     @check_banned
@@ -1806,11 +1823,7 @@ class BotHandlers:
         user = await event.get_sender()
         
         
-        message_text = await self._get_premium_message_text(user.id)
-        buttons = [
-            [Button.url("Contact Admin", SUPPORT_GROUP_LINK, style="success", icon=5895457880710058528)],
-            [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.inline("Help", b"help", style = "primary", icon=5818947586702184246)]
-        ]
+        message_text, buttons = await self._get_premium_message_text(user.id)
 
         await event.reply(message_text, buttons=buttons, parse_mode='html', link_preview=False)
         raise StopPropagation
@@ -1903,6 +1916,25 @@ class BotHandlers:
             [Button.url("Support Group", SUPPORT_GROUP_LINK, style="primary", icon=5443038326535759644)]
         ]
         await event.reply(CONTACT_PROMPT_MESSAGE, buttons=buttons, link_preview=False, parse_mode='html')
+        raise StopPropagation
+
+    async def id_command(self, event: events.NewMessage.Event):
+        """Owner command to get IDs of custom emojis sent in the message."""
+        if not getattr(event.message, 'entities', None):
+            await event.reply("No custom emojis found in the message.")
+            raise StopPropagation
+
+        emoji_list = []
+        
+        for entity, item_text in event.message.get_entities_text():
+            if isinstance(entity, MessageEntityCustomEmoji):
+                emoji_list.append(f"<tg-emoji emoji-id='{entity.document_id}'>{item_text}</tg-emoji>  :  <code>{entity.document_id}</code>")
+        
+        if not emoji_list:
+            await event.reply("<tg-emoji emoji-id='5852812849780362931'>❌️</tg-emoji> No custom emojis found in the message.", parse_mode='html')
+            raise StopPropagation
+            
+        await event.reply("\n".join(emoji_list), parse_mode='html')
         raise StopPropagation
 
     async def handle_admin_reply(self, event: events.NewMessage.Event) -> bool:
@@ -2343,25 +2375,6 @@ class BotHandlers:
             if dump_path and os.path.exists(dump_path):
                 os.remove(dump_path)
         
-        raise StopPropagation
-
-    async def id_command(self, event: events.NewMessage.Event):
-        """Owner command to get IDs of custom emojis sent in the message."""
-        if not getattr(event.message, 'entities', None):
-            await event.reply("No custom emojis found in the message.")
-            raise StopPropagation
-
-        emoji_list = []
-        
-        for entity, item_text in event.message.get_entities_text():
-            if isinstance(entity, MessageEntityCustomEmoji):
-                emoji_list.append(f"<tg-emoji emoji-id='{entity.document_id}'>{item_text}</tg-emoji>  :  <code>{entity.document_id}</code>")
-        
-        if not emoji_list:
-            await event.reply("<tg-emoji emoji-id='5852812849780362931'>❌️</tg-emoji> No custom emojis found in the message.", parse_mode='html')
-            raise StopPropagation
-            
-        await event.reply("\n".join(emoji_list), parse_mode='html')
         raise StopPropagation
 
     async def getlogs_command(self, event: events.NewMessage.Event):
@@ -2949,6 +2962,86 @@ class BotHandlers:
         )
         raise StopPropagation
 
+    async def refund_command(self, event: events.NewMessage.Event):
+        """Admin command to refund a Star payment."""
+        # Only the owner should be able to do this
+        if event.sender_id != OWNER_ID:
+            return
+
+        # Usage: /refund <charge_id> <user_id> [deduct] [no-db]
+        args = event.message.text.split()
+        if len(args) < 3:
+            await event.reply("<tg-emoji emoji-id='5915991028430542030'>⚠️</tg-emoji> Usage: <code>/refund &lt;charge_id&gt; &lt;user_id&gt; [deduct] [no-db]</code>", parse_mode="html")
+            return
+
+        try:
+            target_user_id = int(args[2])
+        except (ValueError, IndexError):
+            await event.reply("<tg-emoji emoji-id='5915991028430542030'>⚠️</tg-emoji> Usage: <code>/refund &lt;charge_id&gt; &lt;user_id&gt; [deduct] [no-db]</code>", parse_mode="html")
+            return
+
+        charge_id = args[1]
+
+        # if something happens wrong with database and we need to refund manually
+        if "no-db" in args:
+            result = await self.payment_manager.refund(target_user_id, event.sender_id, charge_id, "admin", event.sender_id, "refunded by admin", False, True)
+            if result.get('refund_success', False):
+                await self.client.send_message(target_user_id, f"<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> <b>Refund Successful!</b> Stars have been returned to your account.", parse_mode='html')
+                await event.reply(f"<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> <b>Refund Successful!</b> Stars have been returned to the user <b>{target_user_id}</b>.", parse_mode='html')
+            else:
+                await event.reply(f"<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> <b>Failed to refund stars for user {target_user_id} with charge ID {charge_id}</b>: <pre>{str(result.get('refund_error', 'Unknown error'))}</pre>", parse_mode='html')
+            raise StopPropagation
+        
+        # normal refund
+        message_text = ""
+        try:
+            result = await self.payment_manager.refund(target_user_id, event.sender_id, charge_id, "admin", event.sender_id, "refunded by admin", "deduct" in args, False)
+            payment = result['payment']
+            amount = payment['amount']
+            
+            # if refund succeeded
+            if result['refund_success']:
+                message_text += f"<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> <b>Refund Successful!</b> <b>{amount}</b> <tg-emoji emoji-id='5954135079662916434'>⭐</tg-emoji> have been returned to the user <b>{target_user_id}</b>.\n\n"
+                await self.client.send_message(target_user_id, f"<tg-emoji emoji-id='5336985409220001678'>✅</tg-emoji> <b>Refund Successful!</b> We have returned <b>{amount}</b> <tg-emoji emoji-id='5954135079662916434'>⭐</tg-emoji> to your account.", parse_mode='html')
+                
+                # if status update failed
+                if not result['status_updated']:
+                    message_text += f"<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> Failed to mark payment as refunded for user {target_user_id} with charge ID <code>{charge_id}</code>: <pre>{result.get('status_update_error', 'Unknown error')}</pre>\n\n"
+
+                # if deduction succeeded (in case requested)
+                deduction_info = result['deduction_info']
+                if deduction_info:
+                    if deduction_info['action'] == 'deducted':
+                        new_expiry_date = deduction_info['new_expiry_date']
+                        message_text += f"<tg-emoji emoji-id='6296367896398399651'>✅</tg-emoji> Premium access was deducted from user {target_user_id}. New expiry date: <code>{new_expiry_date}</code>\n\n"
+                    elif deduction_info['action'] == 'removed':
+                        message_text += f"<tg-emoji emoji-id='6296367896398399651'>✅</tg-emoji> Premium access was deducted from user {target_user_id}. Since user had premium duration left less than {payment['duration_days']} days, user is no longer premium.\n\n"
+                    else:
+                        message_text += f"<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> Failed to deduct premium for user {target_user_id} with charge ID {charge_id}: <pre>{str(e)}</pre>\n\n"
+            
+            # if refund failed
+            else:
+                message_text += f"<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> <b>Failed to refund stars for user {target_user_id} with charge ID <code>{charge_id}</code>:</b> <pre>{result.get('refund_error', 'Unknown error')}</pre>"
+
+        except ValueError as e:
+            error = str(e)
+            if error == "payment_not_found":
+                await event.reply("<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> Payment <b>not found</b>!", parse_mode='html')
+            elif error == "payment_not_success":
+                await event.reply("<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> Payment is <b>not successful or already refunded</b>, cannot refund!", parse_mode='html')
+            elif error == "user_id_mismatch":
+                await event.reply("<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> Payment is not for this user!", parse_mode='html')
+            else:
+                await event.reply(f"<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> <b>Failed to refund stars for user {target_user_id} with charge ID {charge_id}</b>: <pre>{error}</pre>", parse_mode='html')
+            raise StopPropagation
+        except Exception as e:
+            logger.error(f"Error refunding stars for user {target_user_id} with charge ID {charge_id}: {e}")
+            await event.reply(f"<tg-emoji emoji-id='5019523782004441717'>❌</tg-emoji> <b>Failed to refund stars for user {target_user_id} with charge ID {charge_id}</b>: <pre>{str(e)}</pre>", parse_mode='html')
+            raise StopPropagation
+
+        await event.reply(message_text, parse_mode='html')        
+        raise StopPropagation
+
 
     # ------------- Admins commands ---------------
 
@@ -2994,24 +3087,26 @@ class BotHandlers:
             raise StopPropagation
             
         try:
-            success = await db.add_premium(target_user.id, target_user.username, duration_days, event.sender_id)
+            expiry = await db.add_premium(target_user.id, target_user.username, event.sender_id, duration_days)
         except OverflowError as e:
+            logger.error(f"An error has occurred while adding {target_user.id} to premium by {event.sender_id}. Error: {e}")
             await event.reply("❌ Duration is too long.")
+            raise StopPropagation
+        except ValueError as e:
+            logger.error(f"An error has occurred while adding {target_user.id} to premium by {event.sender_id}. Error: {e}")
+            await event.reply(f"❌ Error: ```{e}```")
             raise StopPropagation
         except Exception as e:
             logger.error(f"An error has occurred while adding {target_user.id} to premium by {event.sender_id}. Error: {e}")
-            await event.reply("❌ An error has occurred maybe this is not a valid user or the user hasn't started the bot.")
+            await event.reply(f"❌ An error has occurred maybe this is not a valid user or the user hasn't started the bot.\n\nError: ```{e}```")
             raise StopPropagation
-        if success:
-            expiry = datetime.now(timezone.utc) + timedelta(days=duration_days)
-            full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
-            await event.reply(
-                f"⭐ Successfully granted premium to **{full_name}** (`{target_user.id}`)!\n"
-                f"Expires in: `{duration_days}` days (on `{expiry.strftime('%Y-%m-%d %H:%M')} UTC`)."
-            )
-            logger.info(f"User {target_user.id} granted {duration_days} days of premium by admin: {event.sender_id}")
-        else:
-            await event.reply("❌ Failed to add user to premium. Maybe they are already premium.")
+
+        full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
+        await event.reply(
+            f"⭐ Successfully granted premium to **{full_name}** (`{target_user.id}`)!\n"
+            f"Expires in: `{duration_days}` days (on `{expiry.strftime('%Y-%m-%d %H:%M')} UTC`)."
+        )
+        logger.info(f"User {target_user.id} granted {duration_days} days of premium by admin: {event.sender_id}")
         raise StopPropagation
     
     async def remove_premium_command(self, event: events.NewMessage.Event):
@@ -3028,12 +3123,17 @@ class BotHandlers:
             await event.reply("🤷‍♂️ This user does not have an active premium subscription.")
             raise StopPropagation
 
-        if await db.remove_premium(target_user.id, event.sender_id):
+        try: 
+            await db.remove_premium(target_user.id, event.sender_id)
             full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
             await event.reply(f"✅ Premium status for **{full_name}** (`{target_user.id}`) has been revoked.")
             logger.info(f"Premium of user {target_user.id} has been revoked by admin: {event.sender_id}")
-        else:
-            await event.reply("❌ An error occurred. Could not remove premium status.")
+        except ValueError as e:
+            logger.error(f"Failed to remove premium for user {target_user.id} by admin {event.sender_id}: {e}")
+            await event.reply(f"❌ An error occurred. Could not remove premium status.\n```{e}```")
+        except Exception as e:
+            logger.error(f"Failed to remove premium for user {target_user.id} by admin {event.sender_id}: {e}")
+            await event.reply(f"❌ An error occurred. Could not remove premium status.\n```{e}```")
         raise StopPropagation
 
     async def extend_premium_command(self, event: events.NewMessage.Event):
@@ -3059,21 +3159,26 @@ class BotHandlers:
         
         days_to_add = int(days_arg)
         try:
-            new_expiry = await db.manage_premium_duration(target_user.id, days_to_add, event.sender_id, 'extended')
+            new_expiry = await db.manage_premium_duration(target_user.id, event.sender_id, 'extended', days_to_add)
         except OverflowError as e:
             await event.reply("❌ Duration is too long.")
             raise StopPropagation
+        except ValueError as e:
+            logger.error(f"Failed to extend premium for user {target_user.id} by admin {event.sender_id}: {e}")
+            await event.reply(f"❌ An error occurred. Could not extend premium status.\n```{e}```")
+            raise StopPropagation
         except Exception as e:
-            await event.reply("❌ An unknown error has occurred; please contact the developer")
+            logger.error(f"Failed to extend premium for user {target_user.id} by admin {event.sender_id}: {e}")
+            await event.reply(f"❌ An unknown error has occurred.\n```{e}```")
             raise StopPropagation
 
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
 
+        logger.info(f"Premium of user {target_user.id} has been extended by {days_to_add} days by admin: {event.sender_id}")
         await event.reply(
             f"✅ Extended premium for **{full_name}** by `{days_to_add}` days.\n"
             f"New expiry date: `{new_expiry.strftime('%Y-%m-%d %H:%M')}`."
         )
-        logger.info(f"Premium of user {target_user.id} has been extended by {days_to_add} days by admin: {event.sender_id}")
         raise StopPropagation
 
     async def deduct_premium_command(self, event: events.NewMessage.Event):
@@ -3093,28 +3198,40 @@ class BotHandlers:
             await event.reply("❌ User not found.")
             raise StopPropagation
 
-        if not await db.is_premium(target_user.id):
-            await event.reply("🤷‍♂️ This user does not have an active premium subscription.")
-            raise StopPropagation
         full_name = f"{target_user.first_name} {target_user.last_name or ''}".strip()
 
-        current_days_left= await db.get_premium_duration_left(target_user.id).days
+        current_days_left= await db.get_premium_duration_left(target_user.id)
+        if current_days_left is None:
+            await event.reply("❌ User does not have an active premium subscription.")
+            raise StopPropagation
+        current_days_left = current_days_left.days
+
         if int(days_arg) > current_days_left:
-            if await db.remove_premium(target_user.id, event.sender_id):
-                await event.reply(f"✅ Since **{full_name}** had only `{current_days_left}` days of premium left, they have been **removed** from premium.")
+            try:
+                await db.remove_premium(target_user.id, event.sender_id)
+                await event.reply(f"✅ Since **{full_name}** had only `{current_days_left + 1}` days of premium left, they have been **removed** from premium.")
                 logger.info(f"Premium of user {target_user.id} has been revoked by admin: {event.sender_id}")
-            else:
-                await event.reply("❌ An error occurred. Could not remove premium status.")
+            except ValueError as e:
+                logger.error(f"Failed to remove premium for user {target_user.id} by admin {event.sender_id}: {e}")
+                await event.reply(f"❌ An error occurred. Could not remove premium status.\n```{e}```")
+            except Exception as e:
+                logger.error(f"Failed to remove premium for user {target_user.id} by admin {event.sender_id}: {e}")
+                await event.reply(f"❌ An error occurred. Could not remove premium status.\n```{e}```")
             raise StopPropagation
 
         days_to_deduct = -abs(int(days_arg)) # Ensure it's a negative number
         try:
-            new_expiry = await db.manage_premium_duration(target_user.id, days_to_deduct, event.sender_id, 'deducted')
+            new_expiry = await db.manage_premium_duration(target_user.id, event.sender_id, 'deducted', days_to_deduct)
         except OverflowError as e:
             await event.reply("❌ Duration is too long.")
             raise StopPropagation
+        except ValueError as e:
+            logger.error(f"Failed to deduct premium for user {target_user.id} by admin {event.sender_id}: {e}")
+            await event.reply(f"❌ An error occurred. Could not deduct premium.\n```{e}````")
+            raise StopPropagation
         except Exception as e:
-            await event.reply("❌ An error occurred. Could not deduct premium.")
+            logger.error(f"Failed to deduct premium for user {target_user.id} by admin {event.sender_id}: {e}")
+            await event.reply(f"❌ An error occurred. Could not deduct premium.\n```{e}````")
             raise StopPropagation
 
         
@@ -3381,12 +3498,41 @@ class BotHandlers:
             
             elif data == "premium":
                 await event.answer()
-                message_text = await self._get_premium_message_text(user_id)
-                buttons = [
-                    [Button.url("Contact Admin", SUPPORT_GROUP_LINK, style = "success", icon=5895457880710058528)],
-                    [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.inline("Help", b"help", style = "primary", icon=5818947586702184246)]
-                ]
+                message_text, buttons = await self._get_premium_message_text(user_id)
                 await event.edit(message_text, buttons=buttons, parse_mode='html', link_preview=False)
+
+            elif data.startswith("buy_premium_") or data.startswith("extend_premium_"):
+                await event.answer()
+
+                if data.startswith("buy_premium_") and await db.is_premium(user_id):
+                    message_text, buttons = await self._get_premium_message_text(user_id)
+                    await event.edit(message_text, buttons=buttons, parse_mode='html', link_preview=False)
+                    return
+                
+                days = int(data.split("_")[2])
+                
+                if days == 30:
+                    amount = PREMIUM_STARS_MONTHLY
+                    title = "1 Month Premium"
+                elif days == 365:
+                    amount = PREMIUM_STARS_YEARLY
+                    title = "1 Year Premium"
+                else:
+                    return
+
+                description = f"Upgrade your account to {title}. Enjoy priority queue, custom titles/authors, higher limits and more!"
+                
+                # Fetch the invoice from our shiny new reusable manager
+                invoice_media = self.payment_manager.create_stars_invoice(
+                    title=title,
+                    description=description,
+                    payload=f"premium_{days}",
+                    amount=amount
+                )
+                
+                # Send the invoice message
+                await self.client.send_message(event.chat_id, file=invoice_media)
+
 
             elif data == "commands":
                 await event.answer()
