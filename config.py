@@ -163,8 +163,8 @@ PREMIUM_PRICE_YEARLY = 5
 PREMIUM_SAVINGS_PERCENT = math.floor((1 - (PREMIUM_PRICE_YEARLY / (PREMIUM_PRICE_MONTHLY * 12))) * 100)
 
 # ----- Telegram Stars Pricing ------
-PREMIUM_STARS_MONTHLY = 5   # Approximate equivalent of $0.50
-PREMIUM_STARS_YEARLY = 7   # Approximate equivalent of $5.00
+PREMIUM_STARS_MONTHLY = 20   # Approximate equivalent of $0.50
+PREMIUM_STARS_YEARLY = 200   # Approximate equivalent of $5.00
 
 # ------ Daily Conversion Limits ------
 # Set to 0 or a negative number for unlimited conversions.
