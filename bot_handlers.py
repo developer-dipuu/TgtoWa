@@ -480,17 +480,15 @@ class BotHandlers:
             # iterate through the list of tuples ("Name", "link")
             for element in REQUIRED_CHANNELS_FORMATTED:
                 # only valid format lenths are allowed
-                if len(element)==2:
-                    name, link = element
-                elif len(element)==3:
+                if len(element)==3:
                     name = element[0]
-                    link = element[2]
+                    id = element[2]
                 else:
                     continue
 
                 try:
                     # Use the link for the check
-                    await self.client(GetParticipantRequest(channel=link, participant=user_id))
+                    await self.client(GetParticipantRequest(channel=id, participant=user_id))
                 except UserNotParticipantError:
                     logger.warning(f"User {user_id} is not a participant in {name}.")
                     return False

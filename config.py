@@ -9,8 +9,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ========= Should be changed ===================
-
 # Telegram API things (its must )
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -18,31 +16,18 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 OWNER_ID = int(os.getenv("OWNER_ID")) # The owner
 
-''' Required channels to use this bot (leave empty if you don't want to force user to join)
-This is handled automatically by env_setup.py.
-For public channel/group add a tuple like this ("Name", "@username")
-For private channel/group add a tuple like this ("Name", "link", -1212324141) 
--1212324141 is your channel/group id, get it by forwarding any of your channel/group's message to @username_to_id_bot (or @MissRose_bot and reply /id to that message)
-[("Public_Channel_Name", "@channel_1_username"), ("Private_Channel_Name", "https://t.me/+abcdefghijk", -34876824274 )]  Use this format Only '''
+# ----- Premium Pricing Configuration ------
+PREMIUM_PRICE_MONTHLY = 0.5
+PREMIUM_PRICE_YEARLY = 5
+PREMIUM_SAVINGS_PERCENT = math.floor((1 - (PREMIUM_PRICE_YEARLY / (PREMIUM_PRICE_MONTHLY * 12))) * 100)
 
-REQUIRED_CHANNELS = json.loads(os.getenv("REQUIRED_CHANNELS_JSON"))
+# ----- Telegram Stars Pricing ------
+PREMIUM_STARS_MONTHLY = 20   # Approximate equivalent of $0.50
+PREMIUM_STARS_YEARLY = 200   # Approximate equivalent of $5.00
 
-# Support group for bot related queries (will be used in help message)
-SUPPORT_GROUP = os.getenv("SUPPORT_GROUP")
-
-# =============================================
-
-
-# ------ Sticker/emoji pack constraints ------
-# dont change these
-MAX_STICKERS_PER_PACK = 30
-MAX_WEBP_SIZE_KB = 495 # maximum size of each WEBP sticker in kilobytes
-MAX_WEBP_FRAMES = 30 # frame cap for a WEBP sticker
-WEBP_QUALITY = 80  # Default quality at the start of the compression
-MAX_ICON_SIZE = 50 * 1024      # 50KB
-STICKER_DIMENSIONS = (512, 512)
-ICON_DIMENSIONS = (96, 96)
-# you may change this if you want
+# ------ Conversion Limits ------
+DAILY_LIMIT_REGULAR = 10 # (< 0 for unlimited)
+DAILY_LIMIT_PREMIUM = 100 # (< 0 for unlimited)
 MAX_CONCURRENT_REGULAR_REQUESTS = 1 
 MAX_CONCURRENT_PREMIUM_REQUESTS = 3
 
@@ -77,18 +62,22 @@ MAX_FILES_PER_CACHE_CHANNEL = 95000
 cache_ids_str = os.getenv("CACHE_CHANNEL_IDS", "")
 CACHE_CHANNEL_IDS = [int(channel_id) for channel_id in cache_ids_str.split(',') if channel_id.strip()]
 
-# ------ formatting a few things ----------
-# formatting properly for use
+# ------ support group and required channels/groups ----------
+# Support group for bot related queries (will be used in help message)
+SUPPORT_GROUP = os.getenv("SUPPORT_GROUP")
 SUPPORT_GROUP_LINK = SUPPORT_GROUP if SUPPORT_GROUP.startswith(('https://t.me/', 'http://t.me/', 'https://telegram.me/', 'http://telegram.me/', 't.me/')) else f"https://t.me/{SUPPORT_GROUP.lstrip("@")}"
+# should be in format like ("Name", "@username", -12345675678) or ("Name", "link", -1212324141)
+REQUIRED_CHANNELS = json.loads(os.getenv("REQUIRED_CHANNELS_JSON"))
+# formatting properly for use
 REQUIRED_CHANNELS_FORMATTED = [
-    (name, link, *rest) if link.startswith(('https://t.me/', 'http://t.me/', 'https://telegram.me/', 'http://telegram.me/', 't.me/')) else (name, f"https://t.me/{link.lstrip("@")}", *rest) for (name, link, *rest) in REQUIRED_CHANNELS
+    (name, link, id) if link.startswith(('https://t.me/', 'http://t.me/', 'https://telegram.me/', 'http://telegram.me/', 't.me/')) else (name, f"https://t.me/{link.lstrip("@")}", id) for (name, link, id) in REQUIRED_CHANNELS
 ]
 
 # Channel list converted to string 
 _channel_list_str = "\n".join([f"• <b><a href=\"{channel[1]}\">{html.escape(channel[0])}</a></b>" for channel in REQUIRED_CHANNELS_FORMATTED])
 
 
-# ========= Notification Settings =============
+# ------- Notification Settings --------
 
 # The chat ID of the group where all notifications will be sent. Must be a negative number for groups.
 # Get it by sending group to @username_to_id_bot
@@ -139,7 +128,7 @@ NOTIFICATIONS = {
     }
 }
 
-# ============ Backup Settings ================
+# ------- Backup Settings --------
 
 BACKUP_ENABLED = True # Master switch for all backups
 
@@ -155,23 +144,17 @@ BACKUPS = {
         "enabled": True, # Toggle for log file backups
     }
 }
-# ========== Others ============
 
-# ----- Premium Pricing Configuration ------
-PREMIUM_PRICE_MONTHLY = 0.5
-PREMIUM_PRICE_YEARLY = 5
-PREMIUM_SAVINGS_PERCENT = math.floor((1 - (PREMIUM_PRICE_YEARLY / (PREMIUM_PRICE_MONTHLY * 12))) * 100)
+# ========== Sticker/emoji pack constraints ==========
+# Warning: dont change these unless you know what you are doing
+MAX_STICKERS_PER_PACK = 30
+MAX_WEBP_SIZE_KB = 495 # maximum size of each WEBP sticker in kilobytes
+MAX_WEBP_FRAMES = 30 # frame cap for a WEBP sticker
+WEBP_QUALITY = 80  # Default quality at the start of the compression
+MAX_ICON_SIZE = 50 * 1024      # 50KB
+STICKER_DIMENSIONS = (512, 512)
+ICON_DIMENSIONS = (96, 96)
 
-# ----- Telegram Stars Pricing ------
-PREMIUM_STARS_MONTHLY = 20   # Approximate equivalent of $0.50
-PREMIUM_STARS_YEARLY = 200   # Approximate equivalent of $5.00
-
-# ------ Daily Conversion Limits ------
-# Set to 0 or a negative number for unlimited conversions.
-DAILY_LIMIT_REGULAR = 10
-DAILY_LIMIT_PREMIUM = 100
-
-#===================== You need not to change thses things unless you want to edit default messages ======================================
 
 #================ Messages ===============
 
