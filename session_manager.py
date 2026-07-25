@@ -1,5 +1,6 @@
-# The final, recommended session_manager.py
-
+"""
+Persistant session manager for the bot, backed by PostgreSQL.
+"""
 import secrets
 import json
 from enum import Enum
@@ -165,7 +166,7 @@ class SessionManager:
 
     async def expire(self, user_id: int, flow: Flow, session_id: str):
         """Expires a session by setting its expiry date to now."""
-        # First, we need to get the message details from the session's payload before we update the data base
+        # First get the message details from the session's payload before we update the data base
         session_to_expire = await self.get(user_id, flow, session_id)
         if session_to_expire and session_to_expire.payload:
             prompt_message_id = session_to_expire.payload.get('prompt_message_id')

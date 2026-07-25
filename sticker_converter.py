@@ -1,5 +1,9 @@
 """
-Sticker and emoji conversion functionality for Telegram to WhatsApp converter
+Sticker conversion module for the Bot.
+
+It downloads stickers from the given set, converts them to webp format using various modules, 
+and creates .wastickers files with the converted stickers. 
+It also creates icon and metadata files for the sticker pack.
 """
 
 import os

@@ -1,6 +1,5 @@
 """
-Queue management system for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
-Now backed by a persistent PostgreSQL database.
+A persistent queue management system backed by PostgreSQL.
 """
 
 import json
@@ -14,7 +13,7 @@ from database import get_pool
 
 logger = logging.getLogger(__name__)
 
-# Priority Levels (unchanged)
+# Priority Levels (lower == greater)
 SYSTEM_PRIORITY = 3
 REGULAR_USER_PRIORITY = 2
 PREMIUM_USER_PRIORITY = 1

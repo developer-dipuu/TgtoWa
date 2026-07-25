@@ -1,5 +1,5 @@
 """
-Main entry point for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
+Main entry point for the bot.
 """
 
 import logging
@@ -121,6 +121,7 @@ async def main():
         # requeue 
         requeued_count = await queue_manager.requeue_stale_items()
         # Start the client with the bot token
+        # pyrefly: ignore [not-async]
         await client.start(bot_token=BOT_TOKEN)
 
         # Rebuild the session index right after starting and before handling events

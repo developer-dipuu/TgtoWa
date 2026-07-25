@@ -1,3 +1,6 @@
+"""
+Configuration file for various settings of the bot. 
+"""
 import html
 import os
 import json
@@ -6,9 +9,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-"""
-Configuration file for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
-"""
 # ========= Should be changed ===================
 
 # Telegram API things (its must )

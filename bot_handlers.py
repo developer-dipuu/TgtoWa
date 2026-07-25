@@ -1,5 +1,5 @@
 """
-Telegram bot handlers for the TG Sticker/Emoji to WA Sticker Converter Bot
+Module containing various handlers for interaction with the bot.
 """
 
 import os 
