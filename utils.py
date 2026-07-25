@@ -1,5 +1,5 @@
 """
-Utility functions for the Telegram Sticker/Emoji to WhatsApp Sticker Converter Bot
+Various utility functions for the bot.
 """
 
 import os
@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Any
 from telethon import TelegramClient
-from telethon.tl.types import InputStickerSetShortName, InputStickerSetID, Document
+from telethon.tl.types import InputStickerSetShortName, InputStickerSetID, TypeInputStickerSet, Document
 from telethon.errors.rpcerrorlist import StickersetInvalidError
 from telethon.tl.functions.messages import GetStickerSetRequest
 from PIL import Image
@@ -84,7 +84,7 @@ class NetworkTask:
                 input_set = InputStickerSetShortName(short_name=pack_input)
             elif isinstance(pack_input, int) and access_hash:
                 input_set = InputStickerSetID(id=pack_input, access_hash=access_hash)
-            elif isinstance(pack_input, (InputStickerSetID, InputStickerSetShortName)):
+            elif isinstance(pack_input, TypeInputStickerSet):
                 # If we get a valid InputStickerSet object, use it directly
                 input_set = pack_input
             else:
