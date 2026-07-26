@@ -2,6 +2,7 @@
 Various utility functions for the bot.
 """
 
+import math
 import os
 import re
 import zipfile
@@ -467,9 +468,7 @@ def estimate_wait_time(sticker_doc_info: list, num_packs: int | None = None) -> 
         else: # Others if any, we prbbly wont get any
             total_seconds += 1
 
-    """Uncomment this part if you want to add some more logic to estimated time based on number of packs it will create
-    Like if your machine has delays in downloading packs so you may add 10 sec for each pack to the estimated time"""
-    # if num_packs:
-    #     total_seconds += 10*num_packs
+    num_packs = math.ceil(len(sticker_doc_info)/30)
+    total_seconds += DOWNLOAD_TIMEOUT * num_packs
     
     return total_seconds
