@@ -32,12 +32,14 @@ MAX_CONCURRENT_REGULAR_REQUESTS = 1
 MAX_CONCURRENT_PREMIUM_REQUESTS = 3
 
 #----- Timeouts and processing limits -------
-DOWNLOAD_TIMEOUT = 30  # seconds to wait for a sticker/emoji file to download  # 👉 if you run the bot on a server or on any machine with good & stable internet speed then i recommend to make it 10
-UPLOAD_TIMEOUT = 60    # seconds to wait for a .wastickers file to upload
+# adjust according to your machine's internet speed and performance
+DOWNLOAD_TIMEOUT = 10  # seconds to wait for a single sticker/emoji file to download (remmember 30 stickers are downloaded parallely at a time)
+UPLOAD_TIMEOUT = 30    # seconds to wait for a .wastickers file to upload
+ESTIMATED_TIME_MULTIPLIER = 3 # how many times of calculated estimated time should bot wait for the conversion of the pack
 MAX_CONVERSION_SECONDS_REGULAR = 300  # 5 minutes. Max estimated time for non-premium users
 DB_UPLOAD_TIMEOUT = 30
 DB_DUMP_TIMEOUT = 30
-MAX_DOWNLOAD_RETRIES = 3
+MAX_DOWNLOAD_RETRIES = 2
 MAX_UPLOAD_RETRIES = 2
 CONVERSION_TIMEOUT = 30 # seconds to wait for a single sticker conversion process
 

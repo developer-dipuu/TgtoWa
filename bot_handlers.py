@@ -1302,7 +1302,7 @@ class BotHandlers:
         pack_short_name = sticker_set.set.short_name
         is_emoji_pack = sticker_set.set.emojis
         estimated_seconds = item.estimated_seconds
-        processing_timeout = max(60, estimated_seconds * 3)
+        processing_timeout = max(60, estimated_seconds * ESTIMATED_TIME_MULTIPLIER)
         status_for_db = "failed"
 
         pack_type_url = "addemoji" if is_emoji_pack else "addstickers"
