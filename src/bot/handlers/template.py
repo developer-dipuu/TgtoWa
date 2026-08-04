@@ -1,0 +1,137 @@
+import html
+from telethon import Button
+
+from src import db
+from src.core.config import *
+from src.bot.handlers.context import BotContext
+from src.services.queue.manager import queue_manager
+
+
+class TemplateHelper:
+    def __init__(self, ctx: BotContext):
+        self.ctx = ctx
+
+    async def get_premium_message_text(self, user_id: int) -> tuple[str, list[list[Button]]]:
+        """Generates the dynamic premium status message for a user."""
+        # Base message with premium benefits
+        benefits_message = (
+            f"<b>Premium Benefits Include:</b>\n\n"
+            f"<blockquote><tg-emoji emoji-id='5188481279963715781'>🚀</tg-emoji> <b>Priority Queue:</b> Your requests jump to the front of the line.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5370951118698339120'>✍️</tg-emoji> <b>Custom Pack Details:</b> Set your own custom title and author name for your packs.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5451882707875276247'>⚙️</tg-emoji> <b>Concurrent Conversions:</b> Convert up to {MAX_CONCURRENT_PREMIUM_REQUESTS} packs at once.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5258113901106580375'>⏳</tg-emoji> <b>Convert Large Packs:</b> Convert large packs containing more stickers/emojis than usual.</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5449683594425410231'>📈</tg-emoji> <b>Higher Daily Limit:</b> Convert up to <b>{DAILY_LIMIT_PREMIUM}</b> packs per day (vs. {DAILY_LIMIT_REGULAR} for regular users).</blockquote>\n"
+            f"<blockquote><tg-emoji emoji-id='5443038326535759644'>💬</tg-emoji> <b>Priority Support:</b> Get faster help in the support group.</blockquote>\n"
+        )
+
+        duration_left = await db.get_premium_duration_left(user_id)
+        
+        if duration_left is not None:
+            days = duration_left.days
+            hours = duration_left.seconds // 3600
+            status_message = (
+                f"<tg-emoji emoji-id='5967522716062847679'>⭐</tg-emoji> <b>You have an active Premium subscription!</b>\n"
+                f"<i>Expires in: {days} days and {hours} hours.</i>\n\n"
+            )
+            buttons = [
+                [Button.inline(f"Extend for 1 Month ({PREMIUM_STARS_MONTHLY} ⭐)", b"extend_premium_30", style="success", icon=5366238787955347845)], 
+                [Button.inline(f"Extend for 1 Year ({PREMIUM_STARS_YEARLY} ⭐)", b"extend_premium_365", style="success", icon=5339520934573255920)],
+                [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.url("Contact Admin", SUPPORT_GROUP_LINK, style="primary", icon=5895457880710058528)]
+            ]
+        else:
+            status_message = (
+                f"<tg-emoji emoji-id='5472125180799098428'>😕</tg-emoji> <b>You are not a Premium user.</b>\n\n"
+                f"<b>Upgrade to unlock great features!</b>\n\n"
+                f"<b>Pricing:</b>\n"
+                f"  <tg-emoji emoji-id='5954135079662916434'>⭐</tg-emoji><b>{PREMIUM_STARS_MONTHLY}</b> or <b>${PREMIUM_PRICE_MONTHLY}</b> / month\n"
+                f"  <tg-emoji emoji-id='5954135079662916434'>⭐</tg-emoji><b>{PREMIUM_STARS_YEARLY}</b> or <b>${PREMIUM_PRICE_YEARLY}</b> / year (<i>Save over {PREMIUM_SAVINGS_PERCENT}%</i>)\n\n"
+                f"<tg-emoji emoji-id='5337239271851960809'>✉️</tg-emoji> If you need to pay with other payment methods, contact us using <b>/contact</b> command or at <b>{SUPPORT_GROUP}</b>.\n\n"
+            )
+            buttons = [
+                [Button.inline(f"Buy 1 Month ({PREMIUM_STARS_MONTHLY} ⭐)", b"buy_premium_30", style="success", icon=5366238787955347845)], 
+                [Button.inline(f"Buy 1 Year ({PREMIUM_STARS_YEARLY} ⭐)", b"buy_premium_365", style="success", icon=5339520934573255920)],
+                [Button.inline("Back to Start", b"start", style = "primary", icon=5258236805890710909), Button.url("Contact Admin", SUPPORT_GROUP_LINK, style="primary", icon=5895457880710058528)]
+        ]
+
+        
+        return status_message + benefits_message, buttons
+
+    def format_suggestion_message(self, list_type: str) -> tuple[str, list]:
+        """Helper to generate the message text and buttons for suggestions."""
+        packs = self.ctx.daily_popular_packs if list_type == 'daily' else self.ctx.all_time_popular_packs
+        
+        if list_type == 'daily':
+            title = "<tg-emoji emoji-id='5251537301154062376'>📅</tg-emoji> <b>Top 10 Popular Packs (Daily)</b>"
+            button = [Button.inline("View All-Time Top 50", b"suggest_all_time", style="primary", icon=5789828777882162072)]
+        else: # all_time
+            title = "<tg-emoji emoji-id='5789828777882162072'>🏆</tg-emoji> <b>Top 50 Popular Packs (All-Time)</b>"
+            button = [Button.inline("View Daily Top 10", b"suggest_daily", style="primary", icon=5251537301154062376)]
+        
+        if not packs:
+            message = f"{title}\n\n" \
+                      "Hmm, I don't have any data for this yet.\n " \
+                      "Check back tomorrow after more packs have been converted! <tg-emoji emoji-id='5240426590126490125'>😊</tg-emoji>"
+        else:
+            pack_list = []
+            for i, pack in enumerate(packs, 1):
+                safe_title = html.escape(pack['pack_title'])
+                pack_list.append(f"{i}. <a href='{pack['pack_url']}'>{safe_title}</a>")
+            
+            message = f"{title}\n\n<b>{"\n".join(pack_list)}</b>"
+        
+        return message, [button]
+
+    async def get_gstats_message_and_buttons(self) -> tuple[str, list]:
+        """Helper to generate the main /gstats message and buttons."""
+        stats = await db.get_gstats()
+        q_stats = await queue_manager.get_queue_stats()
+
+        processing_user = q_stats['processing_user'] or "None"
+
+        message = (
+            f"📊 **Global Bot Statistics**\n\n"
+            f"👤 **Users:**\n"
+            f"  • Total Users: `{stats['total_users']}`\n"
+            f"  • Admins: `{stats['total_admins']}`\n"
+            f"  • Active Premium: `{stats['active_premium']}`\n"
+            f"  • Banned Users: `{stats['total_banned']}`\n\n"
+            f"⚙️ **Conversions (Overall):**\n"
+            f"  • ✅ Succeeded: `{stats['total_succeeded']}`\n"
+            f"  • ❌ Failed: `{stats['total_failed']}`\n"
+            f"  • 🚫 Cancelled: `{stats['total_cancelled']}`\n\n"
+            f"📈 **Conversions (Today):**\n"
+            f"  • ✅ Succeeded: `{stats['today_succeeded']}`\n"
+            f"  • ❌ Failed: `{stats['today_failed']}`\n"
+            f"  • 🚫 Cancelled: `{stats['today_cancelled']}`\n\n"
+            f"⏳ **Live Queue Status:**\n"
+            f"  • Waiting: `{q_stats['total_waiting']}`\n"
+            f"  • Currently Processing: {processing_user}"
+        )
+
+        buttons = [
+            [Button.inline("⭐ Premium Members", b"gstats_premium"), Button.inline("🏆 Top 50 Users", b"gstats_top_users")],
+            [Button.inline("👮‍♂️ Admins List", b"gstats_admins"), Button.inline("🚫 Banned List", b"gstats_banned")],
+            [Button.inline("🔄 Refresh", b"gstats_refresh")]
+        ]
+        return message, buttons
+
+    def create_channel_join_buttons(self) -> list:
+        """Dynamically creates buttons for channels and groups."""
+        keyboard = []
+        # iterate through the list of tuples from config.py
+        for i in range(0, len(REQUIRED_CHANNELS_FORMATTED), 2):
+            row = []
+
+            # First Button in Row
+            name1, link1 = REQUIRED_CHANNELS_FORMATTED[i][:2]
+            row.append(Button.url(f"{name1}", url=link1, style="primary", icon=None))
+
+            # Second Button in Row (if it exists)
+            if i + 1 < len(REQUIRED_CHANNELS_FORMATTED):
+                name2, link2 = REQUIRED_CHANNELS_FORMATTED[i+1][:2]
+                row.append(Button.url(f"{name2}", url=link2, style="primary", icon=None))
+            
+            keyboard.append(row)
+        
+        keyboard.append([Button.inline("Check Again", b"check_membership", style="success", icon=5258200019495821936)])
+        return keyboard

@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import asyncpg
 
-from database import get_pool
+from src.db import get_pool
 
 logger = logging.getLogger(__name__)
 

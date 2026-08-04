@@ -8,9 +8,10 @@ import os
 import signal
 from telethon import TelegramClient
 
-from notification_manager import NotificationManager
-from config import API_ID, API_HASH, BOT_TOKEN, DATA_DIR
-from database import init_pool, close_pool, get_pool, init_db
+from src.services.notifications.manager import NotificationManager
+from src.core.config import API_ID, API_HASH, BOT_TOKEN, DATA_DIR
+from src.db.pool import init_pool, close_pool
+# from src.db.main import init_db
 
 
 # Configure logging
@@ -48,10 +49,10 @@ async def handle_shutdown_signal(handlers: 'BotHandlers', client: 'TelegramClien
     if shutdown_signals == 1:
         logger.warning("⚠️ Graceful shutdown initiated (1/2). Finishing current task... ⚠️")
         # Signal the queue processor to stop picking up new items
-        handlers.shutting_down = True
+        handlers.ctx.shutting_down = True
         
         # Wait for the current item to finish processing
-        async with handlers.processing_lock:
+        async with handlers.ctx.processing_lock:
             logger.warning("Current task finished. Proceeding with shutdown.")
             # Now we can safely shut down everything else
             if ha_manager:
@@ -82,8 +83,8 @@ async def main():
     #initialise the dabase connection pool of postgres
     await init_pool()
     # Initialize the HA manager
-    from database import HighAvailabilityManager
-    ha_manager = HighAvailabilityManager(get_pool())
+    from src.services.ha.manager import high_availability_manager
+    ha_manager = high_availability_manager
 
     # Loop to acquire lock or listen
     while True:
@@ -104,9 +105,9 @@ async def main():
     # So we cant import them when init_pool havent been called yet.
     # BotHandlers directly import global instance of both so we cant impot BotHandlers either
     # Moreover we should only start these when we are confirmed to be LEADER instance
-    from bot_handlers import BotHandlers
-    from session_manager import session_manager
-    from queue_manager import queue_manager
+    from src.bot.handlers.core import BotHandlers
+    from src.services.sessions.manager import session_manager
+    from src.services.queue.manager import queue_manager
 
     # We use a session name for the bot so it can remember its state.
     # The session file will be created in the DATA_DIR directory.
@@ -116,6 +117,7 @@ async def main():
     logger.info("Starting bot...")
     try:
         # Initilize the database
+        from src.db.schema import init_db
         await init_db()
 
         # requeue 
@@ -144,7 +146,7 @@ async def main():
 
         # Start processing the queue if there's anything left over
         if requeued_count > 0 or (await queue_manager.get_queue_stats())['total_waiting'] > 0:
-            if not handlers.processing_lock.locked():
+            if not handlers.ctx.processing_lock.locked():
                 logger.info("Tasks found in queue on startup, initiating queue processing.")
                 asyncio.create_task(handlers.process_queue())
         

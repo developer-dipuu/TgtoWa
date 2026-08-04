@@ -2,8 +2,8 @@ import html
 import logging
 import traceback
 from telethon import TelegramClient
-from config import NOTIFICATION_GROUP_ID, ADMINS_TO_MENTION, NOTIFICATIONS
-from utils import get_user_display_name
+from src.core.config import NOTIFICATION_GROUP_ID, ADMINS_TO_MENTION, NOTIFICATIONS
+from src.utils.formatters import get_user_display_name
 
 logger = logging.getLogger(__name__)
 

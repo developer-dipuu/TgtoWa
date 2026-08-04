@@ -8,3 +8,4 @@ extra_shits/
 *.session-journal
 *.db
 .env
+/storage/

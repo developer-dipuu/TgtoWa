@@ -15,8 +15,10 @@ import logging
 from telethon import TelegramClient
 from telethon.tl.types import Document
 
-from config import *
-from utils import *
+from src.core.config import *
+from src.utils.file_helpers import *
+from src.utils.parsers import *
+from src.utils.network_tasks import NetworkTask
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ class StickerConverter:
                 "--quality", str(WEBP_QUALITY)
                 ]
 
-            if script_name in {'video_to_webp.py', 'tgs_to_webp.py'}:
+            if script_name in {'video.py', 'tgs.py'}:
                 args.extend([
                     "--max-frames", str(MAX_WEBP_FRAMES),
                     "--max-size", str(MAX_WEBP_SIZE_KB),
@@ -83,14 +85,15 @@ class StickerConverter:
             
             script_path = None
             if file_ext == '.tgs':
-                script_path = 'tgs_to_webp.py'
+                script_path = 'tgs.py'
             elif file_ext in ['.webm', '.mp4', '.gif', '.mov', '.mkv']:
-                script_path = 'video_to_webp.py'
+                script_path = 'video.py'
             
             if script_path:
-                 return await self._run_conversion_process(script_path, input_path, output_path)
+                return await self._run_conversion_process(script_path, input_path, output_path)
             else: # Static image
-                 return await self._run_conversion_process('image_to_webp.py', input_path, output_path)
+                script_path = "image.py"
+                return await self._run_conversion_process(script_path, input_path, output_path)
 
         except Exception as e:
             logger.error(f"Failed to convert {input_path} to WebP: {e}")

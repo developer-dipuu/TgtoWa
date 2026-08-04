@@ -10,7 +10,7 @@ import asyncio
 import logging
 import asyncpg
 
-from database import get_pool
+from src.db import get_pool
 
 logger = logging.getLogger(__name__)
 

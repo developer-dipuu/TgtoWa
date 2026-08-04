@@ -6,7 +6,7 @@ Welcome to the official page for the **Telegram to WhatsApp Stickers** bot! This
 **Find the bot on Telegram: [@TGtoWAstickerConverterBot](https://t.me/TGtoWAstickerConverterBot)**
 
 <p align="left">
-  <img src="./pics/cropped_output.png" alt="icon" width="300">
+  <img src="./assets/icons/bot_icon.png" alt="icon" width="300">
 </p>
 
 

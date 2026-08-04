@@ -13,13 +13,13 @@ from telethon.tl.types import (
 )
 from telethon.tl.functions.messages import SetBotPrecheckoutResultsRequest
 from telethon.tl.functions.payments import RefundStarsChargeRequest
-import database as db
-from config import OWNER_ID
-from notification_manager import NotificationManager
-from utils import get_user_display_name
+
+from src import db
+from src.core.config import SYSTEM_USER_ID
+from src.services.notifications.manager import NotificationManager
+from src.utils.formatters import get_user_display_name
 
 logger = logging.getLogger(__name__)
-SYSTEM_USER_ID = 0
 
 class PaymentManager:
     """

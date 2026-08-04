@@ -14,7 +14,9 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# user id of owner and system
 OWNER_ID = int(os.getenv("OWNER_ID")) # The owner
+SYSTEM_USER_ID = 0
 
 # ----- Premium Pricing Configuration ------
 PREMIUM_PRICE_MONTHLY = 0.5
@@ -51,9 +53,9 @@ DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
 
 # ------File paths ---------- 
-DATA_DIR = "data"
-TEMP_DIR = "temp"
-OUTPUT_DIR = "output"
+DATA_DIR = "storage/data"
+TEMP_DIR = "storage/temp"
+OUTPUT_DIR = "storage/output"
 LOG_DIR = "~/screenlogs" # if you have setup the logging system like screen's logging and use logrotate to manage logs (for /getlogs command)
 
 # ------ Cache settings ----------
