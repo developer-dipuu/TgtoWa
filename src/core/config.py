@@ -56,7 +56,7 @@ DB_PORT = os.getenv("DB_PORT")
 DATA_DIR = "storage/data"
 TEMP_DIR = "storage/temp"
 OUTPUT_DIR = "storage/output"
-LOG_DIR = "~/screenlogs" # if you have setup the logging system like screen's logging and use logrotate to manage logs (for /getlogs command)
+LOG_DIR = "storage/logs" # for /getlogs command and log backups
 
 # ------ Cache settings ----------
 CACHE_ENABLED = True # To use cache or not, owner can change it using the bot too but on bot restarts it will change to this default value

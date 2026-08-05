@@ -4,12 +4,13 @@ import shutil
 import tempfile
 from PIL import Image
 from typing import Tuple
-from src.core.config import TEMP_DIR, OUTPUT_DIR
+from src.core.config import TEMP_DIR, OUTPUT_DIR, LOG_DIR
 
 def ensure_directories():
     """Create necessary directories if they don't exist"""
     os.makedirs(TEMP_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
 
 # we dont use it as images are already samll in size maybe we need it in future lets see
 def optimize_image_size(image_data: bytes, max_size: int, dimensions: Tuple[int, int]) -> bytes:

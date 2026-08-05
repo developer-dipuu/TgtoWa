@@ -326,7 +326,8 @@ class OwnerCommands:
         raise StopPropagation
 
     async def getlogs_command(self, event: events.NewMessage.Event):
-        """Owner command to get the screen log files."""        
+        """Owner command to get the log files."""
+        msg_to_edit = await event.reply("⚙️ Getting log files. Please wait...")    
         log_dir = os.path.realpath(os.path.expanduser(LOG_DIR))
         args = event.text.split()
 
@@ -335,47 +336,44 @@ class OwnerCommands:
         
         if not os.path.exists(log_dir):
             logger.error(f"Owner {event.sender_id} requested logs, but log directory '{log_dir}' not found.")
-            await event.reply("❌ Error: Log directory not found.")
+            await msg_to_edit.edit("❌ Error: Log directory not found.")
             return
 
+        # Create a zip file in a separate thread to avoid blocking
+        def create_zip(zip_path, files_paths):
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for file_path in files_paths:
+                    zf.write(file_path, os.path.basename(file_path))
         if get_all: # Send all logs as a zip 
             try:
                 logger.info(f"Owner {event.sender_id} requested all log files.")
                 all_logs = glob.glob(os.path.join(log_dir, '*'))
                 if not all_logs:
-                    await event.reply("🤔 The log directory is empty.")
+                    await msg_to_edit.edit("🤔 The log directory is empty.")
                     return
 
                 zip_path = os.path.join(TEMP_DIR, "bot_logs.zip")
                 
-                await event.reply(f"📦 Zipping up {len(all_logs)} log files. Please wait...")
-
-                # Create a zip file in a separate thread to avoid blocking
-                def create_zip():
-                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                        for log_file in all_logs:
-                            zf.write(log_file, os.path.basename(log_file))
-
                 try:# wait for zipping to complete upto 60 sec
-                    await asyncio.wait_for(asyncio.to_thread(create_zip), 60)
+                    await asyncio.wait_for(asyncio.to_thread(create_zip, zip_path, all_logs), 60)
                 except asyncio.TimeoutError:
                     logger.error(f"Stopped creating zip because it was taking too much time.")
-                    await event.reply(f"Creating zip failed, it is taking too much time. Maybe log files are too big or something unexpected is there in the logs directory.")
+                    await msg_to_edit.edit(f"Creating zip failed, it is taking too much time. Maybe log files are too big or something unexpected is there in the logs directory.")
                     return
                 
                 try:# wait for upload to complete for upto UPLOAD_TIMEOUT seconds
-                    await asyncio.wait_for(self.ctx.client.send_file(event.chat_id, zip_path, caption=f"Here are all {len(all_logs)} log files."), UPLOAD_TIMEOUT)
+                    await asyncio.wait_for(msg_to_edit.edit(f"📦 Here are all {len(all_logs)} log files.", file=zip_path), UPLOAD_TIMEOUT)
                 except asyncio.TimeoutError:
                     logger.error(f"Logs file upload timed out.")
-                    await event.reply("Error: Logs file upload timed out.")
+                    await msg_to_edit.edit("Error: Logs file upload timed out.")
                     return
                 except Exception as e:
                     logger.error(f"Logs file upload failed. Error: {e}")
-                    await event.reply(f"Error: Logs file upload failed.\n**Error**: {e}")
+                    await msg_to_edit.edit(f"Error: Logs file upload failed.\n**Error**: {e}")
                     return
             except Exception as e:
                 logger.error(f"An error occured: {e}")
-                await event.reply(f"Error: An error occured: {e}")
+                await msg_to_edit.edit(f"Error: An error occured: {e}")
             finally:
                 try:
                     if os.path.exists(zip_path):
@@ -385,31 +383,38 @@ class OwnerCommands:
 
         else: # Send the latest (current) log
             logger.info(f"Owner {event.sender_id} requested the latest log file.")
-            # Find the uncompressed .log file (logrotate leaves today's log uncompressed)
-            # .screenrc names it based on session and window e.g. tgBot-0.log
+            # find the uncompressed .log file (the ones which are not rotated yet)
             try:
                 latest_logs = glob.glob(os.path.join(log_dir, '*.log'))
                 latest_logs = [f for f in latest_logs if os.path.getsize(f) > 0]
-                latest_logs.sort(key=os.path.getmtime, reverse=True)
-                if latest_logs:
-                    # Assuming the first one found is the active one
-                    latest_log_path = latest_logs[0]
-                    try:
-                        await asyncio.wait_for(event.reply("📄 Here is the current log file.", file=latest_log_path), UPLOAD_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        logger.error(f"Logs file upload timed out.")
-                        await event.reply("Error: Logs file upload timed out.")
-                        return
-                    except Exception as e:
-                        logger.error(f"Logs file upload failed. Error: {e}")
-                        await event.reply(f"Error: Logs file upload failed.\n**Error**: {e}")
-                        return
-                else:
+                if not latest_logs:
                     logger.error(f"Warning: No .log files found in {log_dir}")
-                    await event.reply("🤔 No `.log` file found. Seems something's wrong.")
+                    await msg_to_edit.edit("🤔 No `.log` file found or they are empty. Seems something's wrong.")
+                    return
+                
+                zip_path = os.path.join(TEMP_DIR, "bot_logs.zip")
+
+                try:# wait for zipping to complete upto 60 sec
+                    await asyncio.wait_for(asyncio.to_thread(create_zip, zip_path, latest_logs), 60)
+                except asyncio.TimeoutError:
+                    logger.error(f"Stopped creating zip because it was taking too much time.")
+                    await msg_to_edit.edit(f"Creating zip failed, it is taking too much time. Maybe log files are too big or something unexpected is there in the logs directory.")
+                    return
+
+                try:
+                    await asyncio.wait_for(msg_to_edit.edit(f"📄 Here are the current log files.", file=zip_path), UPLOAD_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.error(f"Logs file upload timed out.")
+                    await msg_to_edit.edit("Error: Logs file upload timed out.")
+                    return
+                except Exception as e:
+                    logger.error(f"Logs file upload failed. Error: {e}")
+                    await msg_to_edit.edit(f"Error: Logs file upload failed.\n**Error**: {e}")
+                    return
+
             except Exception as e:
                 logger.error(f"An error occured while getting logs: {e}")
-                await event.reply(f"Error: An error occured while getting logs.\n**Error**: {e}")
+                await msg_to_edit.edit(f"Error: An error occured while getting logs.\n**Error**: {e}")
         raise StopPropagation
     
     async def toggle_cache_command(self, event: events.NewMessage.Event):

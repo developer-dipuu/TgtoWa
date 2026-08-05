@@ -629,7 +629,8 @@ if __name__ == "__main__":
     # Configure logging
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
+        level=logging.INFO,
+        stream=sys.stdout
     )
     logger_name = pathlib.Path(__file__).stem
     logger = logging.getLogger(logger_name)

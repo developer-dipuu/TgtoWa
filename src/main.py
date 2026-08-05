@@ -2,6 +2,7 @@
 Main entry point for the bot.
 """
 
+import sys
 import logging
 import asyncio
 import os
@@ -17,7 +18,8 @@ from src.db.pool import init_pool, close_pool
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    stream=sys.stdout
 )
 
 logger = logging.getLogger(__name__)
