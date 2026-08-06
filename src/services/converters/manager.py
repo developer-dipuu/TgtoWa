@@ -37,13 +37,21 @@ class StickerConverter:
         # Build command: python script.py input output --width 512 ...
         
         try:
+            quality = 80
+            if script_name == 'tgs.py':
+                quality = TGS_QUALITY
+            elif script_name == 'video.py':
+                quality = WEBM_QUALITY
+            elif script_name == 'image.py':
+                quality = STATIC_QUALITY
+
             args = [
                 script_path,
                 input_path,
                 output_path,
                 "--width", str(STICKER_DIMENSIONS[0]),
                 "--height", str(STICKER_DIMENSIONS[1]),
-                "--quality", str(WEBP_QUALITY)
+                "--quality", str(quality)
                 ]
 
             if script_name in {'video.py', 'tgs.py'}:
