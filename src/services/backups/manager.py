@@ -36,8 +36,6 @@ class BackupManager:
             dump_filename = f"db_backup_{date_str}.sql"
             dump_path = os.path.join(TEMP_DIR, dump_filename)
 
-            # Create a dictionary for the PGPASSWORD environment variable
-            # This is more secure than putting the password in the command itself
             env = os.environ.copy()
             env['PGPASSWORD'] = DB_PASSWORD
 
@@ -49,7 +47,8 @@ class BackupManager:
                 '-p', str(DB_PORT),
                 '-d', DB_NAME,
                 '-f', dump_path,
-                '--clean', # Add this to drop existing objects before recreating
+                '--no-owner',
+                '--clean',
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
