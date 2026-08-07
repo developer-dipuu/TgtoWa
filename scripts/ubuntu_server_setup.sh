@@ -98,7 +98,7 @@ bold() {
     printf "%b\n" "${BOLD}$*${RESET}"
 }
 
-# --- (1) start --------------------------------------------------------------------------------------
+# --- start --------------------------------------------------------------------------------------
 
 start_heading "SERVER SETUP (UBUNTU)"
 
@@ -111,7 +111,7 @@ if [ "$USERNAME" = "root" ]; then
     exit 1
 fi
 
-# --- (2) SYSTEM SETUP ---------------------------------------------------------------------------------
+# --- SYSTEM SETUP ---------------------------------------------------------------------------------
 subheading "System Setup"
 info "Updating package lists and upgrading system..."
 sudo apt update && sudo apt upgrade -y
@@ -120,7 +120,7 @@ info "Installing essential packages..."
 sudo apt install unattended-upgrades ufw htop git curl unzip python3-pip python3-venv libcairo2-dev pkg-config python3-dev gcc ffmpeg postgresql postgresql-contrib -y
 sudo systemctl enable --now unattended-upgrades
 
-# --- (3) DATABASE SETUP --------------------------------------------------------------------------------
+# --- DATABASE SETUP --------------------------------------------------------------------------------
 
 subheading "Database Setup"
 
@@ -226,7 +226,7 @@ Unattended-Upgrade::Package-Blacklist {
 EOF'
 success "PostgreSQL updates safely blacklisted!"
 
-# --- (4) LOGGING SETUP ---------------------------------------------------------------------------------
+# --- LOGGING SETUP ---------------------------------------------------------------------------------
 subheading "Logging Setup"
 info "Installing pm2..."
 sudo apt install -y nodejs npm
@@ -247,7 +247,7 @@ success "Set up pm2 and pm2 logrotate successfully!"
 
 info "Configuring pm2 to survive reboots..."
 
-STARTUP_OUTPUT=$(pm2 startup systemd -u "$USERNAME" --hp "$HOME")
+STARTUP_OUTPUT=$(pm2 startup systemd -u "$USERNAME" --hp "$HOME" 2>&1) || true
 STARTUP_CMD=$(echo "$STARTUP_OUTPUT" | grep -E '^sudo ')
 
 if [ -n "$STARTUP_CMD" ]; then
@@ -260,8 +260,8 @@ else
     warning "You may need to run 'pm2 startup' manually."
 fi
 
-# --- (5) REPO CLONING AND ENVIRONMENT SETUP -----------------------------------------------------------------------
-GIT_REPO_URL="github.com/not-right-now/tg_to_wa_private.git"
+# --- REPO CLONING AND ENVIRONMENT SETUP -----------------------------------------------------------------------
+GIT_REPO_URL="https://github.com/not-right-now/Telegram-to-WhatsApp-Stickers.git"
 REPO_DIR=$(basename "$GIT_REPO_URL" .git)
 
 subheading "Repo Cloning and Environment Setup"

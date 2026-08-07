@@ -20,7 +20,7 @@ class Colors:
     BG_BLUE    = '\033[44m'
     BG_MAGENTA = '\033[45m' 
 
-def escape(s):
+def escape_value(s):
     return s.replace('\\', '\\\\').replace('"', '\\"')
 
 # A little helper to get user input
@@ -46,7 +46,7 @@ def get_input(prompt, allow_empty=False, default=None, sensitive=False, empty_wa
     if not input_str and empty_warning:
         print(f"{Colors.FG_YELLOW}{empty_warning}{Colors.RESET}")
 
-    return escape(input_str) if escape else input_str
+    return escape_value(input_str) if escape else input_str
 
 print(f"{Colors.BOLD}{Colors.BG_MAGENTA}{Colors.FG_BLACK} Bot Configuration Setup!{Colors.RESET}\n")
 print(f"{Colors.BOLD}Read the instructions and enter the values carefully to create your .env file.{Colors.RESET}")
@@ -75,8 +75,8 @@ with open('.env', 'w') as f:
     # checking if the db credentials file exists
     if os.path.isfile(DB_CRED_FILE):
         try:
-            with open(DB_CRED_FILE) as f:
-                db_creds = json.load(f)
+            with open(DB_CRED_FILE) as cred_f:
+                db_creds = json.load(cred_f)
         except (json.JSONDecodeError, OSError):
             db_creds = None
 
@@ -93,10 +93,10 @@ with open('.env', 'w') as f:
 
     if use_existing:
         f.write("# Database Credentials (escaping required for name, password, user, host)\n")
-        f.write(f'DB_NAME="{escape(db_creds["DB_NAME"])}"\n')
-        f.write(f'DB_PASSWORD="{escape(db_creds["DB_PASS"])}"\n')
-        f.write(f'DB_USER="{escape(db_creds["DB_USER"])}"\n')
-        f.write(f'DB_HOST="{escape(db_creds["DB_HOST"])}"\n')
+        f.write(f'DB_NAME="{escape_value(db_creds["DB_NAME"])}"\n')
+        f.write(f'DB_PASSWORD="{escape_value(db_creds["DB_PASS"])}"\n')
+        f.write(f'DB_USER="{escape_value(db_creds["DB_USER"])}"\n')
+        f.write(f'DB_HOST="{escape_value(db_creds["DB_HOST"])}"\n')
         f.write(f"DB_PORT={db_creds['DB_PORT']}\n\n")
     else:
         print(f"{Colors.BOLD}Enter the credentials of an empty instance of postgresql database.{Colors.RESET}")
